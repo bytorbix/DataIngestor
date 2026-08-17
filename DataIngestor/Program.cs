@@ -1,20 +1,19 @@
 using DataIngestor.KafkaBlock;
+using DataIngestor.UavBlock;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
 builder.Services.AddControllers();
-builder.Services.AddSingleton<KafkaBlock>();
+builder.Services.AddHostedService<KafkaBlock>();
+builder.Services.AddSingleton<UavRouter>();
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
-
-app.Services.GetRequiredService<KafkaBlock>();
-
 
 
 
