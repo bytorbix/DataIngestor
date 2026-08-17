@@ -1,0 +1,6 @@
+@DataIngestor_HostAddress = http://localhost:5295
+
+GET {{DataIngestor_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
