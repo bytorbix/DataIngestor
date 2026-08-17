@@ -1,3 +1,4 @@
+using DataIngestor.FilterBlock;
 using DataIngestor.KafkaBlock;
 using DataIngestor.UavBlock;
 
@@ -8,6 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddHostedService<KafkaBlock>();
 builder.Services.AddSingleton<UavRouter>();
+builder.Services.AddSingleton<TelemetryFilter>();
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();

@@ -1,4 +1,5 @@
 ﻿using Confluent.Kafka;
+using DataIngestor.FilterBlock;
 using DataIngestor.UavBlock;
 
 namespace DataIngestor.KafkaBlock
@@ -10,11 +11,13 @@ namespace DataIngestor.KafkaBlock
         private readonly IConsumer<string, string> consumer;
         private readonly ILogger<KafkaBlock> _logger;
         private readonly UavRouter router;
+        private readonly TelemetryFilter filter;
         private readonly string KAFKA_TOPIC_NAME;
 
 
-        public KafkaBlock(IConfiguration configuration, UavRouter router ,ILogger<KafkaBlock> logger)
+        public KafkaBlock(IConfiguration configuration, UavRouter router , TelemetryFilter filter ,ILogger<KafkaBlock> logger)
         {
+            this.filter = filter;
             this.configuration = configuration;
             this.router = router;
             this._logger = logger;
@@ -51,7 +54,8 @@ namespace DataIngestor.KafkaBlock
                         _logger.LogWarning(ex, "Kafka consume failed for topic {Topic}.", KAFKA_TOPIC_NAME);
                         continue;
                     }
-                    router.Route(result.Message.Key, result.Message.Value);
+
+                    router.Route(result.Message.Key, filter.Strip(result.Message.Value));
                 }
             }
             catch (OperationCanceledException)
