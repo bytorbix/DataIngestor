@@ -42,9 +42,10 @@ namespace DataIngestor.KafkaBlock
         {
             try
             {
+                ConsumeResult<string, string>? result = null;
                 while (true)
                 {
-                    ConsumeResult<string, string>? result = null;
+                    result = null;
                     try
                     {
                         result = consumer.Consume(stoppingToken);

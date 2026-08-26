@@ -4,6 +4,8 @@ namespace DataIngestor.UavBlock
 {
     public class UavRouter
     {
+        // hashset ?
+        
         private readonly ConcurrentDictionary<string, byte> _knownTailNumbers = new(); // byte for minimal value field (we don't need the value so we optimize)
         private readonly ILogger<UavRouter> _logger;
 
