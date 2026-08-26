@@ -1,27 +1,24 @@
 ﻿using Confluent.Kafka;
-using DataIngestor.FilterBlock;
-using DataIngestor.UavBlock;
+using DataIngestor.Processing;
 
-namespace DataIngestor.KafkaBlock
+namespace DataIngestor.Ingestion
 {
     
-    public class KafkaBlock : BackgroundService
+    public class KafkaConsumer : BackgroundService
     {
         private readonly IConfiguration configuration;
         private readonly IConsumer<string, string> consumer;
-        private readonly ILogger<KafkaBlock> _logger;
-        private readonly UavRouter router;
-        private readonly TelemetryFilter filter;
+        private readonly ILogger<KafkaConsumer> _logger;
+        private readonly TelemetryProcessor processor;
         private readonly string KAFKA_TOPIC_NAME;
 
 
-        public KafkaBlock(IConfiguration configuration, UavRouter router , TelemetryFilter filter ,ILogger<KafkaBlock> logger)
+        public KafkaConsumer(IConfiguration configuration, TelemetryProcessor processor ,ILogger<KafkaConsumer> logger)
         {
-            this.filter = filter;
             this.configuration = configuration;
-            this.router = router;
-            this._logger = logger;
-            this.KAFKA_TOPIC_NAME = configuration["Kafka:Topic"] ?? throw new InvalidOperationException("Kafka:Topic is not configured");
+            this.processor = processor;
+            _logger = logger;
+            KAFKA_TOPIC_NAME = configuration["Kafka:Topic"] ?? throw new InvalidOperationException("Kafka:Topic is not configured");
 
             ConsumerConfig config = new()
             {
@@ -55,8 +52,7 @@ namespace DataIngestor.KafkaBlock
                         _logger.LogWarning(ex, "Kafka consume failed for topic {Topic}.", KAFKA_TOPIC_NAME);
                         continue;
                     }
-
-                    router.Route(result.Message.Key, filter.Strip(result.Message.Value));
+                    processor.Process(result.Message.Key, result.Message.Value);
                 }
             }
             catch (OperationCanceledException)

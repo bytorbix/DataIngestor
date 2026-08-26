@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <Folder Include="Controllers\" />
+    <Folder Include="Synchronizing\" />
   </ItemGroup>
 
 </Project>

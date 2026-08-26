@@ -1,6 +1,6 @@
 ﻿using System.Text.Json.Nodes;
 
-namespace DataIngestor.FilterBlock
+namespace DataIngestor.Ingestion
 {
     public class TelemetryFilter
     {

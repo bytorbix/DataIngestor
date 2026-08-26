@@ -1,23 +1,21 @@
-using DataIngestor.FilterBlock;
-using DataIngestor.KafkaBlock;
-using DataIngestor.UavBlock;
+using DataIngestor.Channels;
+using DataIngestor.Ingestion;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
 builder.Services.AddControllers();
-builder.Services.AddHostedService<KafkaBlock>();
-builder.Services.AddSingleton<UavRouter>();
+builder.Services.AddHostedService<KafkaConsumer>();
 builder.Services.AddSingleton<TelemetryFilter>();
+builder.Services.AddSingleton<ChannelRegistry>();
+builder.Services.AddSingleton<RtspListener>();
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
-
-
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
