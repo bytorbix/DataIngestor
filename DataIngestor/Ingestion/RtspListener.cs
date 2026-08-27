@@ -32,16 +32,16 @@ namespace DataIngestor.Ingestion
 
             if (!_processes.TryAdd(tailNumber, process))
             {
-                _logger.LogWarning("");
-            } else
-            {
-                _logger.LogInformation("");
-            }
+                _logger.LogWarning("RTSP listener already running for {TailNumber}", tailNumber);
+                process.Kill();
+                return;
+            } 
 
+            _logger.LogInformation("Started RTSP listener for {TailNumber}", tailNumber);
             Task.Run(() => ReadOutput(tailNumber, process));
         }
 
-        public void ReadOutput(string tailNumber, Process process)
+        private void ReadOutput(string tailNumber, Process process)
         {
             string? line;
             while ((line = process.StandardError.ReadLine()) != null)
