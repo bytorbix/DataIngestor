@@ -6,7 +6,7 @@ namespace DataIngestor.Ingestion
     {
         private static readonly string[] FieldsToStrip =
         {
-            "sync_1", "sync_2", "sync_3", "correlator", "zero space"
+            "sync_1", "sync_2", "sync_3", "correlator", "zero space", "timestamp" // captured packet timestamp
         };
 
         public string Strip(string telemetryJson)

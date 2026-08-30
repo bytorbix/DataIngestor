@@ -5,7 +5,6 @@ namespace DataIngestor.Ingestion
 {
     public class RtspListener(IConfiguration configuration, ILogger<RtspListener> logger)
     {
-        private const string FrameInfoMarker = "Parsed_showinfo";
         private const string RTSP_HOST_FIELD = "Rtsp:Host";
         private const string RTSP_PORT_FIELD = "Rtsp:Port";
         private readonly string _rtspHost = configuration[RTSP_HOST_FIELD] ?? throw new InvalidOperationException("Rtsp:Host is not configured");
@@ -20,8 +19,9 @@ namespace DataIngestor.Ingestion
 
             ProcessStartInfo startInfo = new ProcessStartInfo()
             {
-                FileName = "ffmpeg",
-                Arguments = $"-rtsp_transport tcp -i {rtspUrl} -vf showinfo -f null -",
+                FileName = "ffprobe",
+                Arguments = $"-v quiet -select_streams v:0 -show_entries frame=pts_time -of csv=p=0 -rtsp_transport tcp -i {rtspUrl}",
+                RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -44,11 +44,15 @@ namespace DataIngestor.Ingestion
         public void ReadOutput(string tailNumber, Process process)
         {
             string? line;
-            while ((line = process.StandardError.ReadLine()) != null)
+            while ((line = process.StandardOutput.ReadLine()) != null)
             {
-                if (line.Contains(FrameInfoMarker))
+                if (double.TryParse(line, out double ptsTime))
                 {
-                    _logger.LogInformation("Frame received for {TailNumber}: {Line}", tailNumber, line);
+                    _logger.LogInformation("Frame received for {TailNumber}: {PtsTime}", tailNumber, ptsTime);
+                }
+                else if (!string.IsNullOrWhiteSpace(line))
+                {
+                    _logger.LogWarning("Unparseable ffprobe output for {TailNumber}: {Line}", tailNumber, line);
                 }
             }
 
