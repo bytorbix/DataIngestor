@@ -36,5 +36,11 @@ namespace DataIngestor.Channels
         {
             return _channels.ContainsKey(tailNumber);
         }
+
+        public Channel? Get(string tailNumber)
+        {
+            _channels.TryGetValue(tailNumber, out var channel);
+            return channel;
+        }
     }
 }

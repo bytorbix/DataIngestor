@@ -1,9 +1,10 @@
-﻿using System.Collections.Concurrent;
+﻿using DataIngestor.Channels;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace DataIngestor.Ingestion
 {
-    public class RtspListener(IConfiguration configuration, ILogger<RtspListener> logger)
+    public class RtspListener(IConfiguration configuration, ILogger<RtspListener> logger, ChannelRegistry channelRegistry)
     {
         private const string RTSP_HOST_FIELD = "Rtsp:Host";
         private const string RTSP_PORT_FIELD = "Rtsp:Port";
@@ -20,12 +21,17 @@ namespace DataIngestor.Ingestion
             ProcessStartInfo startInfo = new ProcessStartInfo()
             {
                 FileName = "ffprobe",
-                Arguments = $"-v quiet -select_streams v:0 -show_entries frame=pts_time -of csv=p=0 -rtsp_transport tcp -i {rtspUrl}",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+
+            string[] args = { "-v", "quiet", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "default=noprint_wrappers=1:nokey=1", "-rtsp_transport", "tcp", "-i", rtspUrl }; 
+            foreach (var arg in args)
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
 
             Process process = new() { StartInfo = startInfo };
             process.Start();
@@ -43,12 +49,14 @@ namespace DataIngestor.Ingestion
 
         private void ReadOutput(string tailNumber, Process process)
         {
+            var channel = channelRegistry.Get(tailNumber);
+
             string? line;
             while ((line = process.StandardOutput.ReadLine()) != null)
             {
                 if (double.TryParse(line, out double ptsTime))
                 {
-                    _logger.LogInformation("Frame received for {TailNumber}: {PtsTime}", tailNumber, ptsTime);
+                    channel?.FrameChannel.Writer.TryWrite(new FrameRecord(ptsTime, line));
                 }
                 else if (!string.IsNullOrWhiteSpace(line))
                 {
