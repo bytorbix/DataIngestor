@@ -14,7 +14,6 @@ namespace DataIngestor.Synchronizing
             var telemetryReader = _channel.TelemetryChannel.Reader;
             var frameReader = _channel.FrameChannel.Reader;
 
-
             while (!cancellationToken.IsCancellationRequested)
             {
                 var telemetryReady = telemetryReader.WaitToReadAsync(cancellationToken).AsTask();
@@ -28,15 +27,20 @@ namespace DataIngestor.Synchronizing
                     long elapsedMs = telemetryRecord.TimeMs - _t0.Value;
                     _buffer.Enqueue(telemetryRecord, elapsedMs);
                 }
+
                 else if (completed == frameReady && frameReader.TryRead(out var frameRecord))
                 {
                     double videoElapsedMs = frameRecord.PtsTime * 1000;
-                    
+                    List<TelemetryRecord> matched = new();
+
                     while (_buffer.TryPeek(out var nextTelemetry, out long priority) && priority <= videoElapsedMs)
                     {
                         _buffer.Dequeue();
-                        Console.WriteLine($"[{tailNumber}] video={videoElapsedMs}ms telemetry={priority}ms payload={nextTelemetry.Payload}");
+                        matched.Add(nextTelemetry);
                     }
+
+                    SyncedFrame synced = new SyncedFrame(frameRecord, matched);
+                    Console.WriteLine($"[{tailNumber}] video={videoElapsedMs}ms telemetryCount={synced.Telemetry.Count}");
                 }
             }
         }
