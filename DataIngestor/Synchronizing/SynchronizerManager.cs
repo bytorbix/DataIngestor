@@ -1,4 +1,4 @@
-﻿using DataIngestor.Channels;
+using DataIngestor.Channels;
 using System.Collections.Concurrent;
 
 namespace DataIngestor.Synchronizing
