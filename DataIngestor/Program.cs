@@ -1,6 +1,7 @@
 using DataIngestor.Channels;
 using DataIngestor.Ingestion;
 using DataIngestor.Processing;
+using DataIngestor.Synchronizing;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,6 +13,7 @@ builder.Services.AddSingleton<TelemetryFilter>();
 builder.Services.AddSingleton<ChannelRegistry>();
 builder.Services.AddSingleton<RtspListener>();
 builder.Services.AddSingleton<TelemetryProcessor>();
+builder.Services.AddSingleton<SynchronizerManager>();
 
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle

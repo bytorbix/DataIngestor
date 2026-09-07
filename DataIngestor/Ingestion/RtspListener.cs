@@ -56,6 +56,7 @@ namespace DataIngestor.Ingestion
             {
                 if (double.TryParse(line, out double ptsTime))
                 {
+                    _logger.LogInformation("Frame line for {TailNumber}: {Line}", tailNumber, line);
                     channel?.FrameChannel.Writer.TryWrite(new FrameRecord(ptsTime, line));
                 }
                 else if (!string.IsNullOrWhiteSpace(line))
