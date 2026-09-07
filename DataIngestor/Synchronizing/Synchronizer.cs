@@ -2,7 +2,7 @@
 
 namespace DataIngestor.Synchronizing
 {
-    public class Synchronizer(ChannelRegistry channelRegistry, string tailNumber)
+    public class Synchronizer(ChannelRegistry channelRegistry, string tailNumber, ILogger<Synchronizer> logger)
     {
         private readonly PriorityQueue<TelemetryRecord, long> _buffer = new();
         private readonly Channel _channel = channelRegistry.Get(tailNumber)
@@ -40,7 +40,7 @@ namespace DataIngestor.Synchronizing
                     }
 
                     SyncedFrame synced = new SyncedFrame(frameRecord, matched);
-                    Console.WriteLine($"[{tailNumber}] video={videoElapsedMs}ms telemetryCount={synced.Telemetry.Count}");
+                    logger.LogInformation("[{TailNumber}] video={VideoElapsedMs}ms telemetryCount={TelemetryCount}", tailNumber, videoElapsedMs, synced.Telemetry.Count);
                 }
             }
         }
