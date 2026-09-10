@@ -7,7 +7,23 @@ namespace DataIngestor.Synchronizing
         private readonly PriorityQueue<TelemetryRecord, long> _buffer = new();
         private readonly Channel _channel = channelRegistry.Get(tailNumber)
             ?? throw new InvalidOperationException($"Channel not found for {tailNumber}");
-        private long? _t0;
+        private long? _anchorMs;
+        private readonly Queue<FrameRecord> _pendingFrames = new();
+
+        private void ProcessFrame(FrameRecord frameRecord)
+        {
+            long videoUtcMs = _anchorMs!.Value + (long)(frameRecord.PtsTime * 1000);
+            List<TelemetryRecord> matched = new();
+
+            while (_buffer.TryPeek(out var nextTelemetry, out long priority) && priority <= videoUtcMs)
+            {
+                _buffer.Dequeue();
+                matched.Add(nextTelemetry);
+            }
+
+            SyncedFrame synced = new SyncedFrame(frameRecord, matched);
+            logger.LogInformation("[{TailNumber}] video={VideoUtcMs}ms telemetryCount={TelemetryCount}", tailNumber, videoUtcMs, synced.Telemetry.Count);
+        }
 
         public async Task RunAsync(CancellationToken cancellationToken)
         {
@@ -23,24 +39,23 @@ namespace DataIngestor.Synchronizing
 
                 if (completed == telemetryReady && telemetryReader.TryRead(out var telemetryRecord))
                 {
-                    _t0 ??= telemetryRecord.TimeMs;
-                    long elapsedMs = telemetryRecord.TimeMs - _t0.Value;
-                    _buffer.Enqueue(telemetryRecord, elapsedMs);
+                    bool anchorJustSet = _anchorMs is null;
+                    _anchorMs ??= telemetryRecord.TimeMs - (long)(telemetryRecord.PtsTime * 1000);
+                    _buffer.Enqueue(telemetryRecord, telemetryRecord.TimeMs);
+
+                    if (anchorJustSet)
+                    {
+                        while (_pendingFrames.TryDequeue(out var pending))
+                            ProcessFrame(pending);
+                    }
                 }
 
                 else if (completed == frameReady && frameReader.TryRead(out var frameRecord))
                 {
-                    double videoElapsedMs = frameRecord.PtsTime * 1000;
-                    List<TelemetryRecord> matched = new();
-
-                    while (_buffer.TryPeek(out var nextTelemetry, out long priority) && priority <= videoElapsedMs)
-                    {
-                        _buffer.Dequeue();
-                        matched.Add(nextTelemetry);
-                    }
-
-                    SyncedFrame synced = new SyncedFrame(frameRecord, matched);
-                    logger.LogInformation("[{TailNumber}] video={VideoElapsedMs}ms telemetryCount={TelemetryCount}", tailNumber, videoElapsedMs, synced.Telemetry.Count);
+                    if (_anchorMs is null)
+                        _pendingFrames.Enqueue(frameRecord);
+                    else
+                        ProcessFrame(frameRecord);
                 }
             }
         }

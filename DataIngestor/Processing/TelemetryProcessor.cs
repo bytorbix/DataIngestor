@@ -6,6 +6,8 @@ namespace DataIngestor.Processing
 {
     public class TelemetryProcessor(ChannelRegistry channelRegistry, TelemetryFilter filter, ILogger<TelemetryProcessor> logger)
     {
+        const string PtsTimePropertyName = "pts_time";
+        const string UtcTimeUsPropertyName = "utc_time_us";
         public void Process(string tailNumber, string telemetryJson)
         {
             var channel = channelRegistry.Get(tailNumber);
@@ -17,17 +19,20 @@ namespace DataIngestor.Processing
 
             string strippedJson = filter.Strip(telemetryJson);
             JsonNode? node = JsonNode.Parse(strippedJson);
+            JsonObject obj = node!.AsObject();
 
-            // we check if the field exists and if so if it's nulled
-            if (!node!.AsObject().TryGetPropertyValue("time", out JsonNode? timeNode) || timeNode == null)
+            if (!obj.TryGetPropertyValue(PtsTimePropertyName, out JsonNode? ptsNode) || ptsNode == null ||
+             !obj.TryGetPropertyValue(UtcTimeUsPropertyName, out JsonNode? utcNode) || utcNode == null)
             {
-                logger.LogWarning("Telemetry for {TailNumber} missing 'time' field, dropping.", tailNumber);
+                logger.LogWarning("Telemetry for {TailNumber} missing {PtsField}/{UtcField}, dropping.", tailNumber, PtsTimePropertyName, UtcTimeUsPropertyName);
                 return;
             }
-            long timeMs = timeNode.GetValue<long>();
+
+            double ptsTime = ptsNode.GetValue<double>();
+            long timeMs = utcNode.GetValue<long>() / 1000;
 
             // pipeline record into Channel buffer
-            TelemetryRecord record = new TelemetryRecord(timeMs, strippedJson);
+            TelemetryRecord record = new TelemetryRecord(timeMs, ptsTime, strippedJson);
             channel.TelemetryChannel.Writer.TryWrite(record);
         }
     }
