@@ -4,10 +4,13 @@ namespace DataIngestor.Synchronizing
 {
     public class Synchronizer(ChannelRegistry channelRegistry, string tailNumber, ILogger<Synchronizer> logger)
     {
+        private const long LoopBackwardJumpThresholdMs = 1000;
+
         private readonly PriorityQueue<TelemetryRecord, long> _buffer = new();
         private readonly Channel _channel = channelRegistry.Get(tailNumber)
             ?? throw new InvalidOperationException($"Channel not found for {tailNumber}");
         private long? _anchorMs;
+        private long? _lastTelemetryTimeMs;
         private readonly Queue<FrameRecord> _pendingFrames = new();
 
         private void ProcessFrame(FrameRecord frameRecord)
@@ -22,7 +25,9 @@ namespace DataIngestor.Synchronizing
             }
 
             SyncedFrame synced = new SyncedFrame(frameRecord, matched);
-            logger.LogInformation("[{TailNumber}] video={VideoUtcMs}ms telemetryCount={TelemetryCount}", tailNumber, videoUtcMs, synced.Telemetry.Count);
+
+            long? offsetMissMs = matched.Count > 0 ? videoUtcMs - matched[^1].TimeMs : null;
+            logger.LogInformation("[{TailNumber}] video={VideoUtcMs}ms telemetryCount={TelemetryCount} offsetMissMs={OffsetMissMs}", tailNumber, videoUtcMs, synced.Telemetry.Count, offsetMissMs);
         }
 
         public async Task RunAsync(CancellationToken cancellationToken)
@@ -39,8 +44,20 @@ namespace DataIngestor.Synchronizing
 
                 if (completed == telemetryReady && telemetryReader.TryRead(out var telemetryRecord))
                 {
-                    bool anchorJustSet = _anchorMs is null;
+                    bool loopRestarted = _lastTelemetryTimeMs is not null
+                        && telemetryRecord.TimeMs < _lastTelemetryTimeMs.Value - LoopBackwardJumpThresholdMs;
+
+                    bool anchorJustSet = _anchorMs is null || loopRestarted;
+
+                    if (loopRestarted)
+                    {
+                        logger.LogWarning("[{TailNumber}] Detected stream loop restart (telemetry time went from {PrevMs}ms to {NewMs}ms) - re-anchoring", tailNumber, _lastTelemetryTimeMs, telemetryRecord.TimeMs);
+                        _buffer.Clear();
+                        _anchorMs = null;
+                    }
+
                     _anchorMs ??= telemetryRecord.TimeMs - (long)(telemetryRecord.PtsTime * 1000);
+                    _lastTelemetryTimeMs = telemetryRecord.TimeMs;
                     _buffer.Enqueue(telemetryRecord, telemetryRecord.TimeMs);
 
                     if (anchorJustSet)
