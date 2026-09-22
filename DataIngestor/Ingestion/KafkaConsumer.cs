@@ -52,7 +52,14 @@ namespace DataIngestor.Ingestion
                         _logger.LogWarning(ex, "Kafka consume failed for topic {Topic}.", KAFKA_TOPIC_NAME);
                         continue;
                     }
-                    processor.Process(result.Message.Key, result.Message.Value);
+                    try
+                    {
+                        processor.Process(result.Message.Key, result.Message.Value);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to process telemetry message for key {Key}, dropping.", result.Message.Key);
+                    }
                 }
             }
             catch (OperationCanceledException)
