@@ -52,7 +52,7 @@ namespace DataIngestor.Ingestion
 
         }
 
-        private string BuildMasterPlaylistUrl(string tailNumber) => $"http://{_hlsHost}:{_hlsPort}/{_hlsApp}/{tailNumber}.stream/playlist.m3u8";
+        private string BuildMasterPlaylistUrl(string tailNumber) => $"http://{_hlsHost}:{_hlsPort}/{tailNumber}/_definst_/{tailNumber}.stream/playlist.m3u8";
 
         private async Task<Uri> ResolveChunklistUrlAsync(string tailNumber, CancellationToken cancellationToken)
         {
