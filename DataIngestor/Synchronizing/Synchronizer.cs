@@ -1,16 +1,37 @@
 ﻿using DataIngestor.Channels;
+using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Channel = DataIngestor.Channels.Channel;
 
 namespace DataIngestor.Synchronizing
 {
-    public class Synchronizer(ChannelRegistry channelRegistry, string tailNumber, ILogger<Synchronizer> logger)
+    public class Synchronizer
     {
         private const int FrameWaitTimeoutMs = 150;
+        private const string OUTPUT_DIRECTORY_FIELD = "Output:Directory";
 
         private record WaitingFrame(FrameRecord Frame, long VideoUtcMs, long EnqueuedAtMs);
-        private readonly Channel _channel = channelRegistry.Get(tailNumber)
-            ?? throw new InvalidOperationException($"Channel not found for {tailNumber}");
+
+        private readonly ChannelRegistry channelRegistry;
+        private readonly string tailNumber;
+        private readonly ILogger<Synchronizer> logger;
+        private readonly Channel _channel;
+        private readonly string _outputDirectory;
+        private readonly StreamWriter _outputWriter;
+
+        public Synchronizer(ChannelRegistry channelRegistry, string tailNumber, ILogger<Synchronizer> logger, IConfiguration configuration)
+        {
+            this.channelRegistry = channelRegistry;
+            this.tailNumber = tailNumber;
+            this.logger = logger;
+
+            _channel = channelRegistry.Get(tailNumber) ?? throw new InvalidOperationException($"Channel not found for {tailNumber}");
+            _outputDirectory = configuration[OUTPUT_DIRECTORY_FIELD] ?? throw new InvalidOperationException("Output:Directory is not configured");
+
+            Directory.CreateDirectory(_outputDirectory);
+            _outputWriter = new StreamWriter(Path.Combine(_outputDirectory, $"{tailNumber}.jsonl"), append: true) { AutoFlush = true };
+        }
 
         private readonly PriorityQueue<TelemetryRecord, long> _buffer = new();
         private readonly Queue<WaitingFrame> _waitingFrames = new();
@@ -34,6 +55,24 @@ namespace DataIngestor.Synchronizing
 
             long? offsetMissMs = matched.Count > 0 ? videoUtcMs - matched[^1].TimeMs : null;
             logger.LogInformation("[{TailNumber}] video={VideoUtcMs}ms telemetryCount={TelemetryCount} offsetMissMs={OffsetMissMs}", tailNumber, videoUtcMs, synced.Telemetry.Count, offsetMissMs);
+
+            WriteSyncedFrame(synced, videoUtcMs);
+        }
+
+        private void WriteSyncedFrame(SyncedFrame synced, long videoUtcMs)
+        {
+            JsonObject record = new()
+            {
+                ["videoUtcMs"] = videoUtcMs,
+                ["frame"] = new JsonObject
+                {
+                    ["ptsTime"] = synced.Frame.PtsTime,
+                    ["segmentUrl"] = synced.Frame.Payload
+                },
+                ["telemetry"] = new JsonArray(synced.Telemetry.Select(t => JsonNode.Parse(t.Payload)).ToArray())
+            };
+
+            _outputWriter.WriteLine(record.ToJsonString());
         }
 
         private void TryUnblockWaitingFrames()
