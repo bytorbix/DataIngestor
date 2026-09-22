@@ -29,7 +29,7 @@ namespace DataIngestor.Processing
             }
 
             double ptsTime = ptsNode.GetValue<double>();
-            long timeMs = timeNode.GetValue<long>() * 1000;
+            long timeMs = timeNode.GetValue<long>();
 
             // pipeline record into Channel buffer
             TelemetryRecord record = new TelemetryRecord(timeMs, ptsTime, strippedJson);

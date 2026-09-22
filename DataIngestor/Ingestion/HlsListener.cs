@@ -20,6 +20,7 @@ namespace DataIngestor.Ingestion
 
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _tokens = new();
         private static readonly Regex EpochMillisRegex = new(@"(\d{10,})\|", RegexOptions.Compiled);
+        private const int NoNewSegmentRetryDelayMs = 300;
 
 
         public void Start(string tailNumber)
@@ -215,8 +216,17 @@ namespace DataIngestor.Ingestion
 
             (double AnchorPtsTimeSeconds, long AnchorUtcMs) = id3Events[0];
 
+            double? previousPtsTime = null;
             foreach (double framePtsTime in framePtsTimes)
             {
+                if (previousPtsTime is double previous)
+                {
+                    double deltaSeconds = framePtsTime - previous;
+                    if (deltaSeconds > 0)
+                        await Task.Delay(TimeSpan.FromSeconds(deltaSeconds), cancellationToken);
+                }
+                previousPtsTime = framePtsTime;
+
                 long videoUtcMs = AnchorUtcMs + (long)((framePtsTime - AnchorPtsTimeSeconds) * 1000);
                 channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentUrl.ToString()));
             }
@@ -240,8 +250,7 @@ namespace DataIngestor.Ingestion
         }
 
 
-
-        private async Task RunAsync(string tailNumber, CancellationToken cancellationToken)
+        public async Task RunAsync(string tailNumber, CancellationToken cancellationToken)
         {
             try
             {
@@ -254,7 +263,9 @@ namespace DataIngestor.Ingestion
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     string chunklistText = await client.GetStringAsync(chunklistUrl, cancellationToken);
-                    var (targetDurationSeconds, mediaSequence, segmentUris) = ParseChunklist(chunklistText);
+                    var (_, mediaSequence, segmentUris) = ParseChunklist(chunklistText);
+
+                    bool foundNewSegment = false;
 
                     for (int i = 0; i < segmentUris.Count; i++)
                     {
@@ -268,18 +279,15 @@ namespace DataIngestor.Ingestion
                         await ProcessSegmentAsync(tailNumber, segmentUrl, cancellationToken);
 
                         lastProcessedSequence = sequence;
+                        foundNewSegment = true;
                     }
 
-                    await Task.Delay(TimeSpan.FromSeconds(targetDurationSeconds / 2.0), cancellationToken);
+                    if (!foundNewSegment)
+                        await Task.Delay(NoNewSegmentRetryDelayMs, cancellationToken);
                 }
             }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "HLS listener for {TailNumber} faulted.", tailNumber);
-            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { logger.LogError(ex, "HLS listener for {TailNumber} faulted.", tailNumber); }
         }
     }
 }
