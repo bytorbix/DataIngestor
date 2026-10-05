@@ -18,9 +18,15 @@ namespace DataIngestor.Ingestion
         private readonly string _hlsPort = configuration[HLS_PORT_FIELD] ?? throw new InvalidOperationException("Hls:Port is not configured");
         private readonly string _hlsApp = configuration[HLS_APP_FIELD] ?? throw new InvalidOperationException("Hls:App is not configured");
 
+        private const string HLS_SEGMENT_ARCHIVE_FIELD = "Hls:SegmentArchiveDirectory";
+
+        // optional: keep every downloaded segment here (used for offline accuracy checks), otherwise they're deleted after processing
+        private readonly string? _segmentArchiveDirectory = string.IsNullOrWhiteSpace(configuration[HLS_SEGMENT_ARCHIVE_FIELD]) ? null : configuration[HLS_SEGMENT_ARCHIVE_FIELD];
+
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _tokens = new();
         private static readonly Regex EpochMillisRegex = new(@"(\d{10,})\|", RegexOptions.Compiled);
         private const int NoNewSegmentRetryDelayMs = 300;
+        private const int PlaylistUnavailableRetryDelayMs = 2000;
 
 
         public void Start(string tailNumber)
@@ -125,9 +131,9 @@ namespace DataIngestor.Ingestion
             return stdout;
         }
 
-        private async Task<List<(double PtsTimeSeconds, string HexDump)>> GetId3PacketsAsync(Uri segmentUrl, CancellationToken cancellationToken)
+        private async Task<List<(double PtsTimeSeconds, string HexDump)>> GetId3PacketsAsync(string segmentPath, CancellationToken cancellationToken)
         {
-            string[] args = { "-v", "error", "-select_streams", "d:0", "-show_packets", "-show_data", "-of", "json", segmentUrl.ToString() };
+            string[] args = { "-v", "error", "-select_streams", "d:0", "-show_packets", "-show_data", "-of", "json", segmentPath };
             string json = await RunProcessCaptureOutputAsync("ffprobe", args, cancellationToken);
 
             JsonNode? root = JsonNode.Parse(json);
@@ -179,9 +185,9 @@ namespace DataIngestor.Ingestion
             return match.Success ? long.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) : null;
         }
 
-        private async Task<List<double>> GetVideoFramePtsTimesAsync(Uri segmentUrl, CancellationToken cancellationToken)
+        private async Task<List<double>> GetVideoFramePtsTimesAsync(string segmentPath, CancellationToken cancellationToken)
         {
-            string[] args = { "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "default=noprint_wrappers=1:nokey=1", segmentUrl.ToString() };
+            string[] args = { "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "default=noprint_wrappers=1:nokey=1", segmentPath };
             string output = await RunProcessCaptureOutputAsync("ffprobe", args, cancellationToken);
 
             List<double> ptsTimes = new();
@@ -199,42 +205,59 @@ namespace DataIngestor.Ingestion
             return ptsTimes;
         }
 
-        private async Task ProcessSegmentAsync(string tailNumber, Uri segmentUrl, CancellationToken cancellationToken)
+        // downloads the segment once so both ffprobe passes read a local file instead of fetching it again
+        private async Task<string> DownloadSegmentAsync(HttpClient client, string tailNumber, Uri segmentUrl, CancellationToken cancellationToken)
+        {
+            string directory = _segmentArchiveDirectory is not null
+                ? Path.Combine(_segmentArchiveDirectory, tailNumber)
+                : Path.Combine(Path.GetTempPath(), "DataIngestor", tailNumber);
+            Directory.CreateDirectory(directory);
+
+            string segmentPath = Path.Combine(directory, Path.GetFileName(segmentUrl.LocalPath));
+            byte[] bytes = await client.GetByteArrayAsync(segmentUrl, cancellationToken);
+            await File.WriteAllBytesAsync(segmentPath, bytes, cancellationToken);
+            return segmentPath;
+        }
+
+        private async Task ProcessSegmentAsync(HttpClient client, string tailNumber, Uri segmentUrl, CancellationToken cancellationToken)
         {
             var channel = channelRegistry.Get(tailNumber);
             if (channel is null)
                 return;
 
-            List<(double PtsTimeSeconds, long UtcMs)> id3Events = await GetId3EventsAsync(segmentUrl, cancellationToken);
-            List<double> framePtsTimes = await GetVideoFramePtsTimesAsync(segmentUrl, cancellationToken);
-
-            if (id3Events.Count == 0)
+            string segmentPath = await DownloadSegmentAsync(client, tailNumber, segmentUrl, cancellationToken);
+            try
             {
-                logger.LogWarning("[{TailNumber}] No ID3 timestamp found in segment {SegmentUrl}, dropping {FrameCount} frames", tailNumber, segmentUrl, framePtsTimes.Count);
-                return;
-            }
+                Task<List<(double PtsTimeSeconds, long UtcMs)>> id3Task = GetId3EventsAsync(segmentPath, cancellationToken);
+                Task<List<double>> framesTask = GetVideoFramePtsTimesAsync(segmentPath, cancellationToken);
+                List<(double PtsTimeSeconds, long UtcMs)> id3Events = await id3Task;
+                List<double> framePtsTimes = await framesTask;
 
-            (double AnchorPtsTimeSeconds, long AnchorUtcMs) = id3Events[0];
-
-            double? previousPtsTime = null;
-            foreach (double framePtsTime in framePtsTimes)
-            {
-                if (previousPtsTime is double previous)
+                if (id3Events.Count == 0)
                 {
-                    double deltaSeconds = framePtsTime - previous;
-                    if (deltaSeconds > 0)
-                        await Task.Delay(TimeSpan.FromSeconds(deltaSeconds), cancellationToken);
+                    logger.LogWarning("[{TailNumber}] No ID3 timestamp found in segment {SegmentUrl}, dropping {FrameCount} frames", tailNumber, segmentUrl, framePtsTimes.Count);
+                    return;
                 }
-                previousPtsTime = framePtsTime;
 
-                long videoUtcMs = AnchorUtcMs + (long)((framePtsTime - AnchorPtsTimeSeconds) * 1000);
-                channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentUrl.ToString()));
+                (double AnchorPtsTimeSeconds, long AnchorUtcMs) = id3Events[0];
+
+                // every frame carries its own UTC, so the whole segment is handed over at once (no real-time pacing needed)
+                foreach (double framePtsTime in framePtsTimes)
+                {
+                    long videoUtcMs = AnchorUtcMs + (long)((framePtsTime - AnchorPtsTimeSeconds) * 1000);
+                    channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentUrl.ToString()));
+                }
+            }
+            finally
+            {
+                if (_segmentArchiveDirectory is null)
+                    File.Delete(segmentPath);
             }
         }
 
-        private async Task<List<(double PtsTimeSeconds, long UtcMs)>> GetId3EventsAsync(Uri segmentUrl, CancellationToken cancellationToken)
+        private async Task<List<(double PtsTimeSeconds, long UtcMs)>> GetId3EventsAsync(string segmentPath, CancellationToken cancellationToken)
         {
-            List<(double PtsTimeSeconds, string HexDump)> packets = await GetId3PacketsAsync(segmentUrl, cancellationToken);
+            List<(double PtsTimeSeconds, string HexDump)> packets = await GetId3PacketsAsync(segmentPath, cancellationToken);
             List<(double, long)> events = new();
 
             foreach (var (ptsTimeSeconds, hexDump) in packets)
@@ -252,42 +275,90 @@ namespace DataIngestor.Ingestion
 
         public async Task RunAsync(string tailNumber, CancellationToken cancellationToken)
         {
+            HttpClient client = httpClientFactory.CreateClient();
+            Uri? chunklistUrl = null;
+            long lastProcessedSequence = -1;
+
             try
             {
-                Uri chunklistUrl = await ResolveChunklistUrlAsync(tailNumber, cancellationToken);
-                logger.LogInformation("[{TailNumber}] Resolved chunklist URL: {ChunklistUrl}", tailNumber, chunklistUrl);
-
-                HttpClient client = httpClientFactory.CreateClient();
-                long lastProcessedSequence = -1;
-
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    string chunklistText = await client.GetStringAsync(chunklistUrl, cancellationToken);
-                    var (_, mediaSequence, segmentUris) = ParseChunklist(chunklistText);
-
-                    bool foundNewSegment = false;
-
-                    for (int i = 0; i < segmentUris.Count; i++)
+                    try
                     {
-                        long sequence = mediaSequence + i;
-                        if (sequence <= lastProcessedSequence)
-                            continue;
+                        // (re)resolve until the stream is published; a new chunklist means Wowza restarted the stream and sequences start over
+                        Uri resolvedUrl = await ResolveChunklistUrlAsync(tailNumber, cancellationToken);
+                        if (resolvedUrl != chunklistUrl)
+                        {
+                            chunklistUrl = resolvedUrl;
+                            lastProcessedSequence = -1;
+                            logger.LogInformation("[{TailNumber}] Resolved chunklist URL: {ChunklistUrl}", tailNumber, chunklistUrl);
+                        }
 
-                        Uri segmentUrl = new(chunklistUrl, segmentUris[i]);
-                        logger.LogInformation("[{TailNumber}] New segment #{Sequence}: {SegmentUrl}", tailNumber, sequence, segmentUrl);
-
-                        await ProcessSegmentAsync(tailNumber, segmentUrl, cancellationToken);
-
-                        lastProcessedSequence = sequence;
-                        foundNewSegment = true;
+                        lastProcessedSequence = await PollChunklistAsync(client, tailNumber, chunklistUrl, lastProcessedSequence, cancellationToken);
                     }
-
-                    if (!foundNewSegment)
-                        await Task.Delay(NoNewSegmentRetryDelayMs, cancellationToken);
+                    catch (HttpRequestException ex)
+                    {
+                        logger.LogWarning("[{TailNumber}] HLS playlist unavailable ({Message}), retrying in {DelayMs}ms", tailNumber, ex.Message, PlaylistUnavailableRetryDelayMs);
+                        await Task.Delay(PlaylistUnavailableRetryDelayMs, cancellationToken);
+                    }
                 }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex) { logger.LogError(ex, "HLS listener for {TailNumber} faulted.", tailNumber); }
+        }
+
+        // polls until the chunklist becomes unavailable, then returns the last processed sequence so the caller can re-resolve
+        private async Task<long> PollChunklistAsync(HttpClient client, string tailNumber, Uri chunklistUrl, long lastProcessedSequence, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                string chunklistText;
+                try
+                {
+                    chunklistText = await client.GetStringAsync(chunklistUrl, cancellationToken);
+                }
+                catch (HttpRequestException ex)
+                {
+                    // playlist dropped mid-stream: go back to resolving, but keep our position in case it's the same chunklist
+                    logger.LogWarning("[{TailNumber}] Chunklist unavailable ({Message}), re-resolving in {DelayMs}ms", tailNumber, ex.Message, PlaylistUnavailableRetryDelayMs);
+                    await Task.Delay(PlaylistUnavailableRetryDelayMs, cancellationToken);
+                    return lastProcessedSequence;
+                }
+
+                var (_, mediaSequence, segmentUris) = ParseChunklist(chunklistText);
+
+                if (lastProcessedSequence >= 0 && mediaSequence > lastProcessedSequence + 1)
+                {
+                    logger.LogWarning("[{TailNumber}] Missed segments #{From}-#{To}: they left the playlist before being processed", tailNumber, lastProcessedSequence + 1, mediaSequence - 1);
+                }
+
+                bool foundNewSegment = false;
+
+                for (int i = 0; i < segmentUris.Count; i++)
+                {
+                    long sequence = mediaSequence + i;
+                    if (sequence <= lastProcessedSequence)
+                        continue;
+
+                    Uri segmentUrl = new(chunklistUrl, segmentUris[i]);
+                    logger.LogInformation("[{TailNumber}] New segment #{Sequence}: {SegmentUrl}", tailNumber, sequence, segmentUrl);
+
+                    try
+                    {
+                        await ProcessSegmentAsync(client, tailNumber, segmentUrl, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogError(ex, "[{TailNumber}] Failed to process segment #{Sequence}, skipping it", tailNumber, sequence);
+                    }
+
+                    lastProcessedSequence = sequence;
+                    foundNewSegment = true;
+                }
+
+                if (!foundNewSegment)
+                    await Task.Delay(NoNewSegmentRetryDelayMs, cancellationToken);
+            }
         }
     }
 }
