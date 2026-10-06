@@ -364,3 +364,5 @@ FodyWeavers.xsd
 
 # DataIngestor synced-frame output
 DataIngestor/output/
+# Personal learning notes (learn-wiki)
+.learning/
