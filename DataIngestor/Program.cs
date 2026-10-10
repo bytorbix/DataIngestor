@@ -11,7 +11,10 @@ builder.Services.AddControllers();
 builder.Services.AddHostedService<KafkaConsumer>();
 builder.Services.AddSingleton<TelemetryFilter>();
 builder.Services.AddSingleton<ChannelRegistry>();
-builder.Services.AddSingleton<RtspListener>();
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<FfprobeRunner>();
+builder.Services.AddSingleton<SegmentProcessor>();
+builder.Services.AddSingleton<HlsListener>();
 builder.Services.AddSingleton<TelemetryProcessor>();
 builder.Services.AddSingleton<SynchronizerManager>();
 
