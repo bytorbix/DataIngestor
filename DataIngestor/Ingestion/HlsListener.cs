@@ -1,14 +1,8 @@
-using DataIngestor.Channels;
 using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Globalization;
-using System.Text;
-using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 
 namespace DataIngestor.Ingestion
 {
-    public class HlsListener(IConfiguration configuration, ILogger<HlsListener> logger, IHttpClientFactory httpClientFactory, ChannelRegistry channelRegistry)
+    public class HlsListener(IConfiguration configuration, ILogger<HlsListener> logger, IHttpClientFactory httpClientFactory, SegmentProcessor segmentProcessor)
     {
         private const string HLS_HOST_FIELD = "Hls:Host";
         private const string HLS_PORT_FIELD = "Hls:Port";
@@ -18,15 +12,13 @@ namespace DataIngestor.Ingestion
         private readonly string _hlsPort = configuration[HLS_PORT_FIELD] ?? throw new InvalidOperationException("Hls:Port is not configured");
         private readonly string _hlsApp = configuration[HLS_APP_FIELD] ?? throw new InvalidOperationException("Hls:App is not configured");
 
-        private const string HLS_SEGMENT_ARCHIVE_FIELD = "Hls:SegmentArchiveDirectory";
-
-        // optional: keep every downloaded segment here (used for offline accuracy checks), otherwise they're deleted after processing
-        private readonly string? _segmentArchiveDirectory = string.IsNullOrWhiteSpace(configuration[HLS_SEGMENT_ARCHIVE_FIELD]) ? null : configuration[HLS_SEGMENT_ARCHIVE_FIELD];
-
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _tokens = new();
-        private static readonly Regex EpochMillisRegex = new(@"(\d{10,})\|", RegexOptions.Compiled);
         private const int NoNewSegmentRetryDelayMs = 300;
         private const int PlaylistUnavailableRetryDelayMs = 2000;
+        // HLS spec default when a chunklist omits #EXT-X-TARGETDURATION
+        private const int DefaultTargetDurationSeconds = 10;
+        private const string TargetDurationTag = "#EXT-X-TARGETDURATION:";
+        private const string MediaSequenceTag = "#EXT-X-MEDIA-SEQUENCE:";
 
 
         public void Start(string tailNumber)
@@ -80,7 +72,7 @@ namespace DataIngestor.Ingestion
         }
         private static (int targetDurationSeconds, long mediaSequence, List<string> segmentUris) ParseChunklist(string chunklistText)
         {
-            int targetDurationSeconds = 10;
+            int targetDurationSeconds = DefaultTargetDurationSeconds;
             long mediaSequence = 0;
             List<string> segmentUris = new();
 
@@ -89,189 +81,16 @@ namespace DataIngestor.Ingestion
                 string line = rawLine.Trim();
                 if (line.Length == 0) continue;
 
-                if (line.StartsWith("#EXT-X-TARGETDURATION:"))
-                    targetDurationSeconds = int.Parse(line["#EXT-X-TARGETDURATION:".Length..]);
-                else if (line.StartsWith("#EXT-X-MEDIA-SEQUENCE:"))
-                    mediaSequence = long.Parse(line["#EXT-X-MEDIA-SEQUENCE:".Length..]);
+                if (line.StartsWith(TargetDurationTag))
+                    targetDurationSeconds = int.Parse(line[TargetDurationTag.Length..]);
+                else if (line.StartsWith(MediaSequenceTag))
+                    mediaSequence = long.Parse(line[MediaSequenceTag.Length..]);
                 else if (!line.StartsWith('#'))
                     segmentUris.Add(line);
             }
 
             return (targetDurationSeconds, mediaSequence, segmentUris);
         }
-        private async Task<string> RunProcessCaptureOutputAsync(string fileName, IEnumerable<string> args, CancellationToken cancellationToken)
-        {
-            ProcessStartInfo startInfo = new()
-            {
-                FileName = fileName,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-
-            foreach (string arg in args)
-                startInfo.ArgumentList.Add(arg);
-
-            using Process process = new() { StartInfo = startInfo };
-            process.Start();
-
-            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
-            await process.WaitForExitAsync(cancellationToken);
-            string stdout = await stdoutTask;
-
-            if (process.ExitCode != 0)
-            {
-                string stderr = await stderrTask;
-                throw new InvalidOperationException($"{fileName} exited with code {process.ExitCode}: {stderr}");
-            }
-
-            return stdout;
-        }
-
-        private async Task<List<(double PtsTimeSeconds, string HexDump)>> GetId3PacketsAsync(string segmentPath, CancellationToken cancellationToken)
-        {
-            string[] args = { "-v", "error", "-select_streams", "d:0", "-show_packets", "-show_data", "-of", "json", segmentPath };
-            string json = await RunProcessCaptureOutputAsync("ffprobe", args, cancellationToken);
-
-            JsonNode? root = JsonNode.Parse(json);
-            JsonArray packets = root?["packets"]?.AsArray() ?? new JsonArray();
-
-            List<(double, string)> result = new();
-            foreach (JsonNode? packet in packets)
-            {
-                string? ptsTimeText = packet?["pts_time"]?.GetValue<string>();
-                string? hexDump = packet?["data"]?.GetValue<string>();
-
-                if (ptsTimeText is null || hexDump is null)
-                    continue;
-
-                result.Add((double.Parse(ptsTimeText, CultureInfo.InvariantCulture), hexDump));
-            }
-
-            return result;
-        }
-
-        private static byte[] ParseHexDump(string hexDump)
-        {
-            List<byte> bytes = new();
-
-            foreach (string rawLine in hexDump.Split('\n'))
-            {
-                string line = rawLine.Trim();
-                if (line.Length == 0) continue;
-
-                int colonIndex = line.IndexOf(':');
-                if (colonIndex < 0) continue;
-
-                string afterOffset = line[(colonIndex + 1)..];
-                int asciiGapIndex = afterOffset.IndexOf("  ", StringComparison.Ordinal);
-                string hexPart = asciiGapIndex >= 0 ? afterOffset[..asciiGapIndex] : afterOffset;
-
-                foreach (string group in hexPart.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                    for (int i = 0; i + 1 < group.Length; i += 2)
-                        bytes.Add(Convert.ToByte(group.Substring(i, 2), 16));
-            }
-
-            return bytes.ToArray();
-        }
-
-        private static long? ExtractEpochMillis(byte[] id3Bytes)
-        {
-            string text = Encoding.Latin1.GetString(id3Bytes);
-            Match match = EpochMillisRegex.Match(text);
-            return match.Success ? long.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) : null;
-        }
-
-        private async Task<List<double>> GetVideoFramePtsTimesAsync(string segmentPath, CancellationToken cancellationToken)
-        {
-            string[] args = { "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "default=noprint_wrappers=1:nokey=1", segmentPath };
-            string output = await RunProcessCaptureOutputAsync("ffprobe", args, cancellationToken);
-
-            List<double> ptsTimes = new();
-            foreach (string rawLine in output.Split('\n'))
-            {
-                string line = rawLine.Trim();
-                if (line.Length == 0) continue;
-
-                if (double.TryParse(line, NumberStyles.Float, CultureInfo.InvariantCulture, out double ptsTime))
-                    ptsTimes.Add(ptsTime);
-                else
-                    logger.LogWarning("Unparseable ffprobe frame output: {Line}", line);
-            }
-
-            return ptsTimes;
-        }
-
-        // downloads the segment once so both ffprobe passes read a local file instead of fetching it again
-        private async Task<string> DownloadSegmentAsync(HttpClient client, string tailNumber, Uri segmentUrl, CancellationToken cancellationToken)
-        {
-            string directory = _segmentArchiveDirectory is not null
-                ? Path.Combine(_segmentArchiveDirectory, tailNumber)
-                : Path.Combine(Path.GetTempPath(), "DataIngestor", tailNumber);
-            Directory.CreateDirectory(directory);
-
-            string segmentPath = Path.Combine(directory, Path.GetFileName(segmentUrl.LocalPath));
-            byte[] bytes = await client.GetByteArrayAsync(segmentUrl, cancellationToken);
-            await File.WriteAllBytesAsync(segmentPath, bytes, cancellationToken);
-            return segmentPath;
-        }
-
-        private async Task ProcessSegmentAsync(HttpClient client, string tailNumber, Uri segmentUrl, CancellationToken cancellationToken)
-        {
-            var channel = channelRegistry.Get(tailNumber);
-            if (channel is null)
-                return;
-
-            string segmentPath = await DownloadSegmentAsync(client, tailNumber, segmentUrl, cancellationToken);
-            try
-            {
-                Task<List<(double PtsTimeSeconds, long UtcMs)>> id3Task = GetId3EventsAsync(segmentPath, cancellationToken);
-                Task<List<double>> framesTask = GetVideoFramePtsTimesAsync(segmentPath, cancellationToken);
-                List<(double PtsTimeSeconds, long UtcMs)> id3Events = await id3Task;
-                List<double> framePtsTimes = await framesTask;
-
-                if (id3Events.Count == 0)
-                {
-                    logger.LogWarning("[{TailNumber}] No ID3 timestamp found in segment {SegmentUrl}, dropping {FrameCount} frames", tailNumber, segmentUrl, framePtsTimes.Count);
-                    return;
-                }
-
-                (double AnchorPtsTimeSeconds, long AnchorUtcMs) = id3Events[0];
-
-                // every frame carries its own UTC, so the whole segment is handed over at once (no real-time pacing needed)
-                foreach (double framePtsTime in framePtsTimes)
-                {
-                    long videoUtcMs = AnchorUtcMs + (long)((framePtsTime - AnchorPtsTimeSeconds) * 1000);
-                    channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentUrl.ToString()));
-                }
-            }
-            finally
-            {
-                if (_segmentArchiveDirectory is null)
-                    File.Delete(segmentPath);
-            }
-        }
-
-        private async Task<List<(double PtsTimeSeconds, long UtcMs)>> GetId3EventsAsync(string segmentPath, CancellationToken cancellationToken)
-        {
-            List<(double PtsTimeSeconds, string HexDump)> packets = await GetId3PacketsAsync(segmentPath, cancellationToken);
-            List<(double, long)> events = new();
-
-            foreach (var (ptsTimeSeconds, hexDump) in packets)
-            {
-                byte[] bytes = ParseHexDump(hexDump);
-                long? utcMs = ExtractEpochMillis(bytes);
-
-                if (utcMs is not null)
-                    events.Add((ptsTimeSeconds, utcMs.Value));
-            }
-
-            return events;
-        }
-
 
         public async Task RunAsync(string tailNumber, CancellationToken cancellationToken)
         {
@@ -325,7 +144,7 @@ namespace DataIngestor.Ingestion
                     return lastProcessedSequence;
                 }
 
-                var (_, mediaSequence, segmentUris) = ParseChunklist(chunklistText);
+                (_, long mediaSequence, List<string> segmentUris) = ParseChunklist(chunklistText);
 
                 if (lastProcessedSequence >= 0 && mediaSequence > lastProcessedSequence + 1)
                 {
@@ -345,7 +164,7 @@ namespace DataIngestor.Ingestion
 
                     try
                     {
-                        await ProcessSegmentAsync(client, tailNumber, segmentUrl, cancellationToken);
+                        await segmentProcessor.ProcessSegmentAsync(tailNumber, segmentUrl, cancellationToken);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {

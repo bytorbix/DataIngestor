@@ -9,7 +9,7 @@ public class SynchronizerManager(ChannelRegistry channel, ILogger<SynchronizerMa
 
     public void Start(string tailNumber)
     {
-        CancellationTokenSource cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
         if (!_tokens.TryAdd(tailNumber, cts))
         {
             logger.LogWarning("Synchronizer already running for {TailNumber}", tailNumber);
@@ -17,7 +17,7 @@ public class SynchronizerManager(ChannelRegistry channel, ILogger<SynchronizerMa
             return;
         }
 
-        Synchronizer sync = new Synchronizer(channel, tailNumber, synchronizerLogger, configuration);
+        Synchronizer sync = new(channel, tailNumber, synchronizerLogger, configuration);
         _ = Task.Run(async () =>
         {
             try { await sync.RunAsync(cts.Token); }

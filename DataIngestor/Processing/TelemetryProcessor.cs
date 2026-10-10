@@ -10,7 +10,7 @@ namespace DataIngestor.Processing
         const string TimePropertyName = "time";
         public void Process(string tailNumber, string telemetryJson)
         {
-            var channel = channelRegistry.Get(tailNumber);
+            Channel? channel = channelRegistry.Get(tailNumber);
             if (channel == null)
             {
                 logger.LogWarning("Dropping telemetry for unregistered channel: {TailNumber}", tailNumber);
@@ -18,6 +18,17 @@ namespace DataIngestor.Processing
             }
 
             string strippedJson = filter.Strip(telemetryJson);
+            TelemetryRecord? record = ParseRecord(tailNumber, strippedJson);
+            if (record == null)
+                return;
+
+            // pipeline record into Channel buffer
+            channel.TelemetryChannel.Writer.TryWrite(record);
+        }
+
+        // null means the telemetry is missing pts_time or time and should be dropped
+        private TelemetryRecord? ParseRecord(string tailNumber, string strippedJson)
+        {
             JsonNode? node = JsonNode.Parse(strippedJson);
             JsonObject obj = node!.AsObject();
 
@@ -25,15 +36,13 @@ namespace DataIngestor.Processing
              !obj.TryGetPropertyValue(TimePropertyName, out JsonNode? timeNode) || timeNode == null)
             {
                 logger.LogWarning("Telemetry for {TailNumber} missing {PtsField}/{TimeField}, dropping.", tailNumber, PtsTimePropertyName, TimePropertyName);
-                return;
+                return null;
             }
 
             double ptsTime = ptsNode.GetValue<double>();
             long timeMs = timeNode.GetValue<long>();
 
-            // pipeline record into Channel buffer
-            TelemetryRecord record = new TelemetryRecord(timeMs, ptsTime, strippedJson);
-            channel.TelemetryChannel.Writer.TryWrite(record);
+            return new TelemetryRecord(timeMs, ptsTime, strippedJson);
         }
     }
 }

@@ -1,6 +1,7 @@
 using DataIngestor.Channels;
 using Microsoft.Extensions.Logging;
 using System.Text.Json.Nodes;
+using System.Threading.Channels;
 using Channel = DataIngestor.Channels.Channel;
 
 namespace DataIngestor.Synchronizing
@@ -16,18 +17,16 @@ namespace DataIngestor.Synchronizing
         private record WaitingFrame(FrameRecord Frame, long VideoUtcMs, long EnqueuedAtMs);
         private record BufferedTelemetry(long TimeMs, JsonObject Data);
 
-        private readonly ChannelRegistry channelRegistry;
-        private readonly string tailNumber;
-        private readonly ILogger<Synchronizer> logger;
+        private readonly string _tailNumber;
+        private readonly ILogger<Synchronizer> _logger;
         private readonly Channel _channel;
         private readonly string _outputDirectory;
         private readonly StreamWriter _outputWriter;
 
         public Synchronizer(ChannelRegistry channelRegistry, string tailNumber, ILogger<Synchronizer> logger, IConfiguration configuration)
         {
-            this.channelRegistry = channelRegistry;
-            this.tailNumber = tailNumber;
-            this.logger = logger;
+            _tailNumber = tailNumber;
+            _logger = logger;
 
             _channel = channelRegistry.Get(tailNumber) ?? throw new InvalidOperationException($"Channel not found for {tailNumber}");
             _outputDirectory = configuration[OUTPUT_DIRECTORY_FIELD] ?? throw new InvalidOperationException("Output:Directory is not configured");
@@ -106,7 +105,7 @@ namespace DataIngestor.Synchronizing
 
         private void EmitReadyFrames()
         {
-            while (_waitingFrames.TryPeek(out var waiting))
+            while (_waitingFrames.TryPeek(out WaitingFrame? waiting))
             {
                 bool timedOut = Environment.TickCount64 - waiting.EnqueuedAtMs >= FrameWaitTimeoutMs;
                 SyncedFrame? synced = TrySync(waiting, timedOut);
@@ -129,8 +128,8 @@ namespace DataIngestor.Synchronizing
 
         private void EmitSyncedFrame(SyncedFrame synced)
         {
-            logger.LogInformation("[{TailNumber}] video={VideoUtcMs}ms method={Method} before={BeforeTimeMs} after={AfterTimeMs}",
-                tailNumber, synced.VideoUtcMs, synced.Method, synced.BeforeTimeMs, synced.AfterTimeMs);
+            _logger.LogInformation("[{TailNumber}] video={VideoUtcMs}ms method={Method} before={BeforeTimeMs} after={AfterTimeMs}",
+                _tailNumber, synced.VideoUtcMs, synced.Method, synced.BeforeTimeMs, synced.AfterTimeMs);
 
             WriteSyncedFrame(synced);
         }
@@ -159,7 +158,7 @@ namespace DataIngestor.Synchronizing
 
         private Task CreateWaitingFrameTimeoutTask(CancellationToken cancellationToken)
         {
-            if (!_waitingFrames.TryPeek(out var oldest))
+            if (!_waitingFrames.TryPeek(out WaitingFrame? oldest))
             {
                 return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }
@@ -171,24 +170,24 @@ namespace DataIngestor.Synchronizing
 
         public async Task RunAsync(CancellationToken cancellationToken)
         {
-            var telemetryReader = _channel.TelemetryChannel.Reader;
-            var frameReader = _channel.FrameChannel.Reader;
+            ChannelReader<TelemetryRecord> telemetryReader = _channel.TelemetryChannel.Reader;
+            ChannelReader<FrameRecord> frameReader = _channel.FrameChannel.Reader;
 
             try
             {
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    var telemetryReady = telemetryReader.WaitToReadAsync(cancellationToken).AsTask();
-                    var frameReady = frameReader.WaitToReadAsync(cancellationToken).AsTask();
-                    var waitingFrameTimeout = CreateWaitingFrameTimeoutTask(cancellationToken);
+                    Task<bool> telemetryReady = telemetryReader.WaitToReadAsync(cancellationToken).AsTask();
+                    Task<bool> frameReady = frameReader.WaitToReadAsync(cancellationToken).AsTask();
+                    Task waitingFrameTimeout = CreateWaitingFrameTimeoutTask(cancellationToken);
 
-                    var completed = await Task.WhenAny(telemetryReady, frameReady, waitingFrameTimeout);
+                    Task completed = await Task.WhenAny(telemetryReady, frameReady, waitingFrameTimeout);
 
-                    if (completed == telemetryReady && telemetryReader.TryRead(out var telemetryRecord))
+                    if (completed == telemetryReady && telemetryReader.TryRead(out TelemetryRecord? telemetryRecord))
                     {
                         AddTelemetry(telemetryRecord);
                     }
-                    else if (completed == frameReady && frameReader.TryRead(out var frameRecord))
+                    else if (completed == frameReady && frameReader.TryRead(out FrameRecord? frameRecord))
                     {
                         _waitingFrames.Enqueue(new WaitingFrame(frameRecord, frameRecord.VideoUtcMs, Environment.TickCount64));
                     }
