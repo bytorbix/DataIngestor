@@ -6,9 +6,11 @@ namespace DataIngestor.Processing
 {
     public class TelemetryProcessor(ChannelRegistry channelRegistry, TelemetryFilter filter, ILogger<TelemetryProcessor> logger)
     {
+        const string PtsTimePropertyName = "pts_time";
+        const string TimePropertyName = "time";
         public void Process(string tailNumber, string telemetryJson)
         {
-            var channel = channelRegistry.Get(tailNumber);
+            Channel? channel = channelRegistry.Get(tailNumber);
             if (channel == null)
             {
                 logger.LogWarning("Dropping telemetry for unregistered channel: {TailNumber}", tailNumber);
@@ -16,19 +18,31 @@ namespace DataIngestor.Processing
             }
 
             string strippedJson = filter.Strip(telemetryJson);
-            JsonNode? node = JsonNode.Parse(strippedJson);
-
-            // we check if the field exists and if so if it's nulled
-            if (!node!.AsObject().TryGetPropertyValue("time", out JsonNode? timeNode) || timeNode == null)
-            {
-                logger.LogWarning("Telemetry for {TailNumber} missing 'time' field, dropping.", tailNumber);
+            TelemetryRecord? record = ParseRecord(tailNumber, strippedJson);
+            if (record == null)
                 return;
-            }
-            long timeMs = timeNode.GetValue<long>();
 
             // pipeline record into Channel buffer
-            TelemetryRecord record = new TelemetryRecord(timeMs, strippedJson);
             channel.TelemetryChannel.Writer.TryWrite(record);
+        }
+
+        // null means the telemetry is missing pts_time or time and should be dropped
+        private TelemetryRecord? ParseRecord(string tailNumber, string strippedJson)
+        {
+            JsonNode? node = JsonNode.Parse(strippedJson);
+            JsonObject obj = node!.AsObject();
+
+            if (!obj.TryGetPropertyValue(PtsTimePropertyName, out JsonNode? ptsNode) || ptsNode == null ||
+             !obj.TryGetPropertyValue(TimePropertyName, out JsonNode? timeNode) || timeNode == null)
+            {
+                logger.LogWarning("Telemetry for {TailNumber} missing {PtsField}/{TimeField}, dropping.", tailNumber, PtsTimePropertyName, TimePropertyName);
+                return null;
+            }
+
+            double ptsTime = ptsNode.GetValue<double>();
+            long timeMs = timeNode.GetValue<long>();
+
+            return new TelemetryRecord(timeMs, ptsTime, strippedJson);
         }
     }
 }

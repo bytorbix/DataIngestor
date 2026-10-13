@@ -6,17 +6,17 @@ namespace DataIngestor.Ingestion
     
     public class KafkaConsumer : BackgroundService
     {
-        private readonly IConfiguration configuration;
-        private readonly IConsumer<string, string> consumer;
+        private readonly IConfiguration _configuration;
+        private readonly IConsumer<string, string> _consumer;
         private readonly ILogger<KafkaConsumer> _logger;
-        private readonly TelemetryProcessor processor;
+        private readonly TelemetryProcessor _processor;
         private readonly string KAFKA_TOPIC_NAME;
 
 
         public KafkaConsumer(IConfiguration configuration, TelemetryProcessor processor ,ILogger<KafkaConsumer> logger)
         {
-            this.configuration = configuration;
-            this.processor = processor;
+            _configuration = configuration;
+            _processor = processor;
             _logger = logger;
             KAFKA_TOPIC_NAME = configuration["Kafka:Topic"] ?? throw new InvalidOperationException("Kafka:Topic is not configured");
 
@@ -26,8 +26,8 @@ namespace DataIngestor.Ingestion
                 GroupId = configuration["Kafka:GroupId"] ?? throw new InvalidOperationException("Kafka:GroupId is not configured")
             };
 
-            consumer = new ConsumerBuilder<string, string>(config).Build();
-            consumer.Subscribe(KAFKA_TOPIC_NAME);
+            _consumer = new ConsumerBuilder<string, string>(config).Build();
+            _consumer.Subscribe(KAFKA_TOPIC_NAME);
         }
 
         protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -40,19 +40,25 @@ namespace DataIngestor.Ingestion
             try
             {
                 ConsumeResult<string, string>? result = null;
-                while (true)
+                while (!stoppingToken.IsCancellationRequested)
                 {
-                    result = null;
                     try
                     {
-                        result = consumer.Consume(stoppingToken);
+                        result = _consumer.Consume(stoppingToken);
                     }
                     catch (ConsumeException ex)
                     {
                         _logger.LogWarning(ex, "Kafka consume failed for topic {Topic}.", KAFKA_TOPIC_NAME);
                         continue;
                     }
-                    processor.Process(result.Message.Key, result.Message.Value);
+                    try
+                    {
+                        _processor.Process(result.Message.Key, result.Message.Value);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to process telemetry message for key {Key}, dropping.", result.Message.Key);
+                    }
                 }
             }
             catch (OperationCanceledException)
