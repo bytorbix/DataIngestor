@@ -23,7 +23,8 @@ public class SynchronizerManager(ChannelRegistry channel, ILogger<SynchronizerMa
             try { await sync.RunAsync(cts.Token); }
             catch (OperationCanceledException) { }
             catch (Exception ex) { logger.LogError(ex, "Synchronizer for {TailNumber} faulted.", tailNumber); }
-            finally { _tokens.TryRemove(tailNumber, out _); }
+            // only remove our own entry: a quick unregister -> register may already have added the next flight's
+            finally { _tokens.TryRemove(new KeyValuePair<string, CancellationTokenSource>(tailNumber, cts)); }
         });
     }
 

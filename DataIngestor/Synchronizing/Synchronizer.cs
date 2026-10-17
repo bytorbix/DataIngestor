@@ -20,8 +20,7 @@ namespace DataIngestor.Synchronizing
         private readonly string _tailNumber;
         private readonly ILogger<Synchronizer> _logger;
         private readonly Channel _channel;
-        private readonly string _outputDirectory;
-        private readonly StreamWriter _outputWriter;
+        private readonly FlightOutput _flightOutput;
 
         public Synchronizer(ChannelRegistry channelRegistry, string tailNumber, ILogger<Synchronizer> logger, IConfiguration configuration)
         {
@@ -29,10 +28,8 @@ namespace DataIngestor.Synchronizing
             _logger = logger;
 
             _channel = channelRegistry.Get(tailNumber) ?? throw new InvalidOperationException($"Channel not found for {tailNumber}");
-            _outputDirectory = configuration[OUTPUT_DIRECTORY_FIELD] ?? throw new InvalidOperationException("Output:Directory is not configured");
-
-            Directory.CreateDirectory(_outputDirectory);
-            _outputWriter = new StreamWriter(Path.Combine(_outputDirectory, $"{tailNumber}.jsonl"), append: true) { AutoFlush = true };
+            string outputDirectory = configuration[OUTPUT_DIRECTORY_FIELD] ?? throw new InvalidOperationException("Output:Directory is not configured");
+            _flightOutput = new FlightOutput(outputDirectory, tailNumber);
         }
 
         // telemetry sorted by time, frames in arrival order (emitted strictly in that order)
@@ -153,7 +150,7 @@ namespace DataIngestor.Synchronizing
                 }
             };
 
-            _outputWriter.WriteLine(record.ToJsonString());
+            _flightOutput.Write(synced.VideoUtcMs, record);
         }
 
         private Task CreateWaitingFrameTimeoutTask(CancellationToken cancellationToken)
@@ -197,7 +194,7 @@ namespace DataIngestor.Synchronizing
             }
             finally
             {
-                _outputWriter.Dispose();
+                _flightOutput.Dispose();
             }
         }
     }
