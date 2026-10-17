@@ -35,7 +35,7 @@ namespace DataIngestor.Ingestion
                 // every frame carries its own UTC, so the whole segment is handed over at once (no real-time pacing needed)
                 foreach (double framePtsTime in framePtsTimes)
                 {
-                    long videoUtcMs = AnchorUtcMs + (long)((framePtsTime - AnchorPtsTimeSeconds) * 1000);
+                    long videoUtcMs = AnchorUtcMs + (long)Math.Round((framePtsTime - AnchorPtsTimeSeconds) * 1000);
                     channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentUrl.ToString()));
                 }
             }
