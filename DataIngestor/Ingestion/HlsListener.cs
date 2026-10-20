@@ -41,6 +41,7 @@ namespace DataIngestor.Ingestion
                 return;
             }
 
+            segmentProcessor.ClearStaging(tailNumber);
             run.Task = Task.Run(() => RunAsync(tailNumber, run));
 
             logger.LogInformation("Started HLS listener for {TailNumber}", tailNumber);

@@ -7,6 +7,7 @@ namespace DataIngestor.Synchronizing
     public class FlightOutput : IDisposable
     {
         private const string CHUNKS_DIRECTORY = "chunks";
+        private const string SEGMENTS_DIRECTORY = "segments";
         private const string TEMP_SUFFIX = ".tmp";
         private const string MANIFEST_FILE = "flight.json";
 
@@ -19,6 +20,8 @@ namespace DataIngestor.Synchronizing
         private StreamWriter? _chunkWriter;
         private string? _chunkTempPath;
         private int _chunkNumber;
+        // the open chunk's staged .ts, owned by this flight from its first frame; it moves into segments/ when the chunk closes
+        private string? _segmentPath;
         private long _recordedStartUtcMs;
         private long _recordedEndUtcMs;
         private DateTimeOffset _ingestedAtUtc;
@@ -37,7 +40,7 @@ namespace DataIngestor.Synchronizing
 
         // the flight is opened by its first record, since that's the first time its start is known
         // records arrive in order, so the first record of segment N+1 means chunk N is complete
-        public void Write(long videoUtcMs, int segmentNumber, JsonObject record)
+        public void Write(long videoUtcMs, int segmentNumber, string segmentPath, JsonObject record)
         {
             if (_flightDirectory is null)
                 Open(videoUtcMs);
@@ -45,7 +48,7 @@ namespace DataIngestor.Synchronizing
             if (_chunkWriter is null || segmentNumber != _chunkNumber)
             {
                 CloseChunk();
-                OpenChunk(segmentNumber);
+                OpenChunk(segmentNumber, segmentPath);
             }
 
             _recordedEndUtcMs = Math.Max(_recordedEndUtcMs, videoUtcMs);
@@ -55,9 +58,13 @@ namespace DataIngestor.Synchronizing
 
         public static string FormatChunkName(int segmentNumber) => $"{segmentNumber:D6}.jsonl";
 
-        private void OpenChunk(int segmentNumber)
+        // where a segment lives inside its flight; frame records point here, not at the Wowza URL
+        public static string FormatSegmentKey(int segmentNumber) => $"{SEGMENTS_DIRECTORY}/{segmentNumber:D6}.ts";
+
+        private void OpenChunk(int segmentNumber, string segmentPath)
         {
             _chunkNumber = segmentNumber;
+            _segmentPath = segmentPath;
             _chunkTempPath = Path.Combine(_flightDirectory!, CHUNKS_DIRECTORY, FormatChunkName(segmentNumber) + TEMP_SUFFIX);
             _chunkWriter = new StreamWriter(_chunkTempPath, append: false) { AutoFlush = true };
         }
@@ -70,6 +77,12 @@ namespace DataIngestor.Synchronizing
 
             _chunkWriter.Dispose();
             _chunkWriter = null;
+
+            // segment first, so a finished chunk never shows up without its video
+            if (File.Exists(_segmentPath))
+                File.Move(_segmentPath, Path.Combine(_flightDirectory!, FormatSegmentKey(_chunkNumber)), overwrite: true);
+            _segmentPath = null;
+
             File.Move(_chunkTempPath!, _chunkTempPath![..^TEMP_SUFFIX.Length], overwrite: true);
             _chunkTempPath = null;
         }
@@ -86,6 +99,7 @@ namespace DataIngestor.Synchronizing
             if (Directory.Exists(_flightDirectory))
                 Directory.Delete(_flightDirectory, recursive: true);
             Directory.CreateDirectory(Path.Combine(_flightDirectory, CHUNKS_DIRECTORY));
+            Directory.CreateDirectory(Path.Combine(_flightDirectory, SEGMENTS_DIRECTORY));
 
             WriteManifest(closed: false);
         }

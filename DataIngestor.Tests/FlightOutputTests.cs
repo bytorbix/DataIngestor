@@ -16,6 +16,18 @@ public class FlightOutputTests : IDisposable
             Directory.Delete(_outputDirectory, recursive: true);
     }
 
+    // a staged path that was never written, for tests that aren't about segments
+    private string NoSegment => Path.Combine(_outputDirectory, "missing.ts");
+
+    private string StageSegment(int segmentNumber)
+    {
+        string directory = Path.Combine(_outputDirectory, "1234", ".incoming");
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, $"{segmentNumber:D6}.ts");
+        File.WriteAllText(path, $"segment {segmentNumber}");
+        return path;
+    }
+
     private FlightOutput NewOutput() => new(_outputDirectory, "1234", new FakeTimeProvider(IngestedAt));
 
     private string FlightDirectory(string flightId) => Path.Combine(_outputDirectory, "1234", flightId);
@@ -44,7 +56,7 @@ public class FlightOutputTests : IDisposable
     public void FirstRecord_OpensTheFlightFromTheDataStamp_NotTheIngestClock()
     {
         using FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, 1, new JsonObject());
+        output.Write(FirstStampMs, 1, NoSegment, new JsonObject());
 
         Assert.Equal("1234-20190614T153012Z", output.FlightId);
         JsonObject manifest = Manifest(FlightDirectory(output.FlightId!));
@@ -58,8 +70,8 @@ public class FlightOutputTests : IDisposable
     public void EveryRecord_CarriesTheFlightId()
     {
         FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, 1, new JsonObject { ["videoUtcMs"] = FirstStampMs });
-        output.Write(FirstStampMs + 33, 1, new JsonObject { ["videoUtcMs"] = FirstStampMs + 33 });
+        output.Write(FirstStampMs, 1, NoSegment, new JsonObject { ["videoUtcMs"] = FirstStampMs });
+        output.Write(FirstStampMs + 33, 1, NoSegment, new JsonObject { ["videoUtcMs"] = FirstStampMs + 33 });
         output.Dispose(); // the open writer holds the file
 
         string[] lines = File.ReadAllLines(ChunkPath(output.FlightId!, "000001.jsonl"));
@@ -71,8 +83,8 @@ public class FlightOutputTests : IDisposable
     public void Dispose_ClosesTheFlightWithTheLastStamp()
     {
         FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, 1, new JsonObject());
-        output.Write(FirstStampMs + 60_000, 1, new JsonObject());
+        output.Write(FirstStampMs, 1, NoSegment, new JsonObject());
+        output.Write(FirstStampMs + 60_000, 1, NoSegment, new JsonObject());
         output.Dispose();
 
         JsonObject manifest = Manifest(FlightDirectory("1234-20190614T153012Z"));
@@ -85,12 +97,12 @@ public class FlightOutputTests : IDisposable
     {
         using (FlightOutput first = NewOutput())
         {
-            first.Write(FirstStampMs, 1, new JsonObject());
-            first.Write(FirstStampMs + 33, 1, new JsonObject());
+            first.Write(FirstStampMs, 1, NoSegment, new JsonObject());
+            first.Write(FirstStampMs + 33, 1, NoSegment, new JsonObject());
         }
 
         using (FlightOutput replay = NewOutput())
-            replay.Write(FirstStampMs, 1, new JsonObject());
+            replay.Write(FirstStampMs, 1, NoSegment, new JsonObject());
 
         string[] lines = File.ReadAllLines(ChunkPath("1234-20190614T153012Z", "000001.jsonl"));
         Assert.Single(lines);
@@ -100,7 +112,7 @@ public class FlightOutputTests : IDisposable
     public void OpenChunk_KeepsItsTempName_UntilItIsComplete()
     {
         using FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, 1, new JsonObject());
+        output.Write(FirstStampMs, 1, NoSegment, new JsonObject());
 
         Assert.True(File.Exists(ChunkPath(output.FlightId!, "000001.jsonl.tmp")));
         Assert.False(File.Exists(ChunkPath(output.FlightId!, "000001.jsonl")));
@@ -110,9 +122,9 @@ public class FlightOutputTests : IDisposable
     public void NextSegment_RenamesThePreviousChunk_AndStartsANewOne()
     {
         using FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, 1, new JsonObject());
-        output.Write(FirstStampMs + 33, 1, new JsonObject());
-        output.Write(FirstStampMs + 2000, 2, new JsonObject());
+        output.Write(FirstStampMs, 1, NoSegment, new JsonObject());
+        output.Write(FirstStampMs + 33, 1, NoSegment, new JsonObject());
+        output.Write(FirstStampMs + 2000, 2, NoSegment, new JsonObject());
 
         Assert.Equal(2, File.ReadAllLines(ChunkPath(output.FlightId!, "000001.jsonl")).Length);
         Assert.False(File.Exists(ChunkPath(output.FlightId!, "000001.jsonl.tmp")));
@@ -123,11 +135,44 @@ public class FlightOutputTests : IDisposable
     public void Dispose_RenamesTheLastChunk()
     {
         FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, 1, new JsonObject());
-        output.Write(FirstStampMs + 2000, 2, new JsonObject());
+        output.Write(FirstStampMs, 1, NoSegment, new JsonObject());
+        output.Write(FirstStampMs + 2000, 2, NoSegment, new JsonObject());
         output.Dispose();
 
         string[] chunks = Directory.GetFiles(Path.Combine(FlightDirectory(output.FlightId!), "chunks")).Select(Path.GetFileName).ToArray()!;
         Assert.Equal(new[] { "000001.jsonl", "000002.jsonl" }, chunks.Order());
+    }
+
+    [Fact]
+    public void NextSegment_MovesThePreviousSegmentIntoTheFlight()
+    {
+        using FlightOutput output = NewOutput();
+        string first = StageSegment(1);
+        string second = StageSegment(2);
+        output.Write(FirstStampMs, 1, first, new JsonObject());
+        output.Write(FirstStampMs + 2000, 2, second, new JsonObject());
+
+        string segmentPath = Path.Combine(FlightDirectory(output.FlightId!), "segments", "000001.ts");
+        Assert.Equal("segment 1", File.ReadAllText(segmentPath));
+        Assert.False(File.Exists(first));
+        Assert.True(File.Exists(second));
+    }
+
+    [Fact]
+    public void Dispose_MovesTheLastSegmentIntoTheFlight()
+    {
+        FlightOutput output = NewOutput();
+        string staged = StageSegment(1);
+        output.Write(FirstStampMs, 1, staged, new JsonObject());
+        output.Dispose();
+
+        Assert.Equal("segment 1", File.ReadAllText(Path.Combine(FlightDirectory(output.FlightId!), "segments", "000001.ts")));
+        Assert.False(File.Exists(staged));
+    }
+
+    [Fact]
+    public void SegmentKey_PointsIntoTheFlightsSegmentsFolder()
+    {
+        Assert.Equal("segments/000042.ts", FlightOutput.FormatSegmentKey(42));
     }
 }

@@ -141,7 +141,7 @@ namespace DataIngestor.Synchronizing
                 {
                     ["ptsTime"] = synced.Frame.PtsTime,
                     ["segmentNumber"] = synced.Frame.SegmentNumber,
-                    ["segmentUrl"] = synced.Frame.Payload
+                    ["segment"] = FlightOutput.FormatSegmentKey(synced.Frame.SegmentNumber)
                 },
                 ["telemetry"] = synced.Telemetry,
                 ["sync"] = new JsonObject
@@ -152,7 +152,7 @@ namespace DataIngestor.Synchronizing
                 }
             };
 
-            _flightOutput.Write(synced.VideoUtcMs, synced.Frame.SegmentNumber, record);
+            _flightOutput.Write(synced.VideoUtcMs, synced.Frame.SegmentNumber, synced.Frame.SegmentPath, record);
             _writtenFrames++;
         }
 
