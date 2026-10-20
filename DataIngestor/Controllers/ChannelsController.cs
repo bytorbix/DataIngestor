@@ -30,13 +30,16 @@ namespace DataIngestor.Controllers
         }
 
         [HttpDelete("{tailNumber}")]
-        public IActionResult Unregister(string tailNumber)
+        public async Task<IActionResult> Unregister(string tailNumber)
         {
             try
             {
+                // video stops first (after its current segment); the channel stays registered so telemetry keeps
+                // flowing until the synchronizer has drained; the whole drain is bounded by about one segment
+                using CancellationTokenSource drainTimeout = new(hlsListener.GetDrainTimeout(tailNumber));
+                await hlsListener.StopAsync(tailNumber, drainTimeout.Token);
+                await synchronizerManager.StopAsync(tailNumber, drainTimeout.Token);
                 channelRegistry.Unregister(tailNumber);
-                hlsListener.Stop(tailNumber);
-                synchronizerManager.Stop(tailNumber);
                 return Ok();
             }
             catch (Exception ex)

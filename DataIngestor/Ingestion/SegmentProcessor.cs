@@ -10,7 +10,8 @@ namespace DataIngestor.Ingestion
         // optional: keep every downloaded segment here (used for offline accuracy checks), otherwise they're deleted after processing
         private readonly string? _segmentArchiveDirectory = string.IsNullOrWhiteSpace(configuration[HLS_SEGMENT_ARCHIVE_FIELD]) ? null : configuration[HLS_SEGMENT_ARCHIVE_FIELD];
 
-        public async Task ProcessSegmentAsync(string tailNumber, Uri segmentUrl, CancellationToken cancellationToken)
+        // stateless: the caller owns the flight's segment count and passes each segment's number in
+        public async Task ProcessSegmentAsync(string tailNumber, int segmentNumber, Uri segmentUrl, CancellationToken cancellationToken)
         {
             Channel? channel = channelRegistry.Get(tailNumber);
             if (channel is null)
@@ -36,7 +37,7 @@ namespace DataIngestor.Ingestion
                 foreach (double framePtsTime in framePtsTimes)
                 {
                     long videoUtcMs = AnchorUtcMs + (long)Math.Round((framePtsTime - AnchorPtsTimeSeconds) * 1000);
-                    channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentUrl.ToString()));
+                    channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentNumber, segmentUrl.ToString()));
                 }
             }
             finally

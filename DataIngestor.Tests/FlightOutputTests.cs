@@ -20,6 +20,8 @@ public class FlightOutputTests : IDisposable
 
     private string FlightDirectory(string flightId) => Path.Combine(_outputDirectory, "1234", flightId);
 
+    private string ChunkPath(string flightId, string fileName) => Path.Combine(FlightDirectory(flightId), "chunks", fileName);
+
     private static JsonObject Manifest(string flightDirectory)
         => JsonNode.Parse(File.ReadAllText(Path.Combine(flightDirectory, "flight.json")))!.AsObject();
 
@@ -42,7 +44,7 @@ public class FlightOutputTests : IDisposable
     public void FirstRecord_OpensTheFlightFromTheDataStamp_NotTheIngestClock()
     {
         using FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, new JsonObject());
+        output.Write(FirstStampMs, 1, new JsonObject());
 
         Assert.Equal("1234-20190614T153012Z", output.FlightId);
         JsonObject manifest = Manifest(FlightDirectory(output.FlightId!));
@@ -56,11 +58,11 @@ public class FlightOutputTests : IDisposable
     public void EveryRecord_CarriesTheFlightId()
     {
         FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, new JsonObject { ["videoUtcMs"] = FirstStampMs });
-        output.Write(FirstStampMs + 33, new JsonObject { ["videoUtcMs"] = FirstStampMs + 33 });
+        output.Write(FirstStampMs, 1, new JsonObject { ["videoUtcMs"] = FirstStampMs });
+        output.Write(FirstStampMs + 33, 1, new JsonObject { ["videoUtcMs"] = FirstStampMs + 33 });
         output.Dispose(); // the open writer holds the file
 
-        string[] lines = File.ReadAllLines(Path.Combine(FlightDirectory(output.FlightId!), "frames.jsonl"));
+        string[] lines = File.ReadAllLines(ChunkPath(output.FlightId!, "000001.jsonl"));
         Assert.Equal(2, lines.Length);
         Assert.All(lines, line => Assert.Equal("1234-20190614T153012Z", (string?)JsonNode.Parse(line)!["flightId"]));
     }
@@ -69,8 +71,8 @@ public class FlightOutputTests : IDisposable
     public void Dispose_ClosesTheFlightWithTheLastStamp()
     {
         FlightOutput output = NewOutput();
-        output.Write(FirstStampMs, new JsonObject());
-        output.Write(FirstStampMs + 60_000, new JsonObject());
+        output.Write(FirstStampMs, 1, new JsonObject());
+        output.Write(FirstStampMs + 60_000, 1, new JsonObject());
         output.Dispose();
 
         JsonObject manifest = Manifest(FlightDirectory("1234-20190614T153012Z"));
@@ -83,14 +85,49 @@ public class FlightOutputTests : IDisposable
     {
         using (FlightOutput first = NewOutput())
         {
-            first.Write(FirstStampMs, new JsonObject());
-            first.Write(FirstStampMs + 33, new JsonObject());
+            first.Write(FirstStampMs, 1, new JsonObject());
+            first.Write(FirstStampMs + 33, 1, new JsonObject());
         }
 
         using (FlightOutput replay = NewOutput())
-            replay.Write(FirstStampMs, new JsonObject());
+            replay.Write(FirstStampMs, 1, new JsonObject());
 
-        string[] lines = File.ReadAllLines(Path.Combine(FlightDirectory("1234-20190614T153012Z"), "frames.jsonl"));
+        string[] lines = File.ReadAllLines(ChunkPath("1234-20190614T153012Z", "000001.jsonl"));
         Assert.Single(lines);
+    }
+
+    [Fact]
+    public void OpenChunk_KeepsItsTempName_UntilItIsComplete()
+    {
+        using FlightOutput output = NewOutput();
+        output.Write(FirstStampMs, 1, new JsonObject());
+
+        Assert.True(File.Exists(ChunkPath(output.FlightId!, "000001.jsonl.tmp")));
+        Assert.False(File.Exists(ChunkPath(output.FlightId!, "000001.jsonl")));
+    }
+
+    [Fact]
+    public void NextSegment_RenamesThePreviousChunk_AndStartsANewOne()
+    {
+        using FlightOutput output = NewOutput();
+        output.Write(FirstStampMs, 1, new JsonObject());
+        output.Write(FirstStampMs + 33, 1, new JsonObject());
+        output.Write(FirstStampMs + 2000, 2, new JsonObject());
+
+        Assert.Equal(2, File.ReadAllLines(ChunkPath(output.FlightId!, "000001.jsonl")).Length);
+        Assert.False(File.Exists(ChunkPath(output.FlightId!, "000001.jsonl.tmp")));
+        Assert.True(File.Exists(ChunkPath(output.FlightId!, "000002.jsonl.tmp")));
+    }
+
+    [Fact]
+    public void Dispose_RenamesTheLastChunk()
+    {
+        FlightOutput output = NewOutput();
+        output.Write(FirstStampMs, 1, new JsonObject());
+        output.Write(FirstStampMs + 2000, 2, new JsonObject());
+        output.Dispose();
+
+        string[] chunks = Directory.GetFiles(Path.Combine(FlightDirectory(output.FlightId!), "chunks")).Select(Path.GetFileName).ToArray()!;
+        Assert.Equal(new[] { "000001.jsonl", "000002.jsonl" }, chunks.Order());
     }
 }
