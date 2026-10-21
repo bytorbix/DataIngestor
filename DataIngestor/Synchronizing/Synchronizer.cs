@@ -152,7 +152,7 @@ namespace DataIngestor.Synchronizing
                 }
             };
 
-            _flightOutput.Write(synced.VideoUtcMs, synced.Frame.SegmentNumber, synced.Frame.SegmentPath, record);
+            _flightOutput.Write(synced.VideoUtcMs, synced.Frame, record);
             _writtenFrames++;
         }
 

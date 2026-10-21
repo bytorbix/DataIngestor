@@ -1,5 +1,6 @@
 using DataIngestor.Channels;
 using System.Collections.Concurrent;
+using System.Globalization;
 
 namespace DataIngestor.Ingestion
 {
@@ -30,6 +31,7 @@ namespace DataIngestor.Ingestion
         private const int DefaultTargetDurationSeconds = 10;
         private const string TargetDurationTag = "#EXT-X-TARGETDURATION:";
         private const string MediaSequenceTag = "#EXT-X-MEDIA-SEQUENCE:";
+        private const string SegmentDurationTag = "#EXTINF:";
 
 
         public void Start(string tailNumber)
@@ -111,11 +113,13 @@ namespace DataIngestor.Ingestion
 
             return new Uri(masterUrl, chunklistLine);
         }
-        private static (int targetDurationSeconds, long mediaSequence, List<string> segmentUris) ParseChunklist(string chunklistText)
+        // each segment's #EXTINF duration is kept for the flight's recorded playlist
+        private static (int targetDurationSeconds, long mediaSequence, List<(string Uri, double DurationSeconds)> segments) ParseChunklist(string chunklistText)
         {
             int targetDurationSeconds = DefaultTargetDurationSeconds;
             long mediaSequence = 0;
-            List<string> segmentUris = new();
+            List<(string, double)> segments = new();
+            double? pendingDurationSeconds = null;
 
             foreach (string rawLine in chunklistText.Split('\n'))
             {
@@ -126,11 +130,16 @@ namespace DataIngestor.Ingestion
                     targetDurationSeconds = int.Parse(line[TargetDurationTag.Length..]);
                 else if (line.StartsWith(MediaSequenceTag))
                     mediaSequence = long.Parse(line[MediaSequenceTag.Length..]);
+                else if (line.StartsWith(SegmentDurationTag))
+                    pendingDurationSeconds = double.Parse(line[SegmentDurationTag.Length..].Split(',')[0], CultureInfo.InvariantCulture);
                 else if (!line.StartsWith('#'))
-                    segmentUris.Add(line);
+                {
+                    segments.Add((line, pendingDurationSeconds ?? targetDurationSeconds));
+                    pendingDurationSeconds = null;
+                }
             }
 
-            return (targetDurationSeconds, mediaSequence, segmentUris);
+            return (targetDurationSeconds, mediaSequence, segments);
         }
 
         private async Task RunAsync(string tailNumber, ListenerRun run)
@@ -194,7 +203,7 @@ namespace DataIngestor.Ingestion
                     return (lastProcessedSequence, segmentNumber);
                 }
 
-                (int targetDurationSeconds, long mediaSequence, List<string> segmentUris) = ParseChunklist(chunklistText);
+                (int targetDurationSeconds, long mediaSequence, List<(string Uri, double DurationSeconds)> segments) = ParseChunklist(chunklistText);
                 run.TargetDurationSeconds = targetDurationSeconds;
 
                 if (lastProcessedSequence >= 0 && mediaSequence > lastProcessedSequence + 1)
@@ -204,7 +213,7 @@ namespace DataIngestor.Ingestion
 
                 bool foundNewSegment = false;
 
-                for (int i = 0; i < segmentUris.Count; i++)
+                for (int i = 0; i < segments.Count; i++)
                 {
                     long sequence = mediaSequence + i;
                     if (sequence <= lastProcessedSequence)
@@ -213,14 +222,14 @@ namespace DataIngestor.Ingestion
                     // flight end: the segment in progress was the last one
                     stopToken.ThrowIfCancellationRequested();
 
-                    Uri segmentUrl = new(chunklistUrl, segmentUris[i]);
+                    Uri segmentUrl = new(chunklistUrl, segments[i].Uri);
                     // numbered before processing, so a segment that fails still uses its number and shows up as a gap
                     segmentNumber++;
                     logger.LogInformation("[{TailNumber}] New segment #{Sequence} (flight segment {SegmentNumber}): {SegmentUrl}", tailNumber, sequence, segmentNumber, segmentUrl);
 
                     try
                     {
-                        await segmentProcessor.ProcessSegmentAsync(tailNumber, segmentNumber, segmentUrl, run.Abort.Token);
+                        await segmentProcessor.ProcessSegmentAsync(tailNumber, segmentNumber, segmentUrl, segments[i].DurationSeconds, run.Abort.Token);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {

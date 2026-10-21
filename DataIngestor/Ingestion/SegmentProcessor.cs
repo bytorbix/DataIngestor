@@ -25,7 +25,7 @@ namespace DataIngestor.Ingestion
         }
 
         // stateless: the caller owns the flight's segment count and passes each segment's number in
-        public async Task ProcessSegmentAsync(string tailNumber, int segmentNumber, Uri segmentUrl, CancellationToken cancellationToken)
+        public async Task ProcessSegmentAsync(string tailNumber, int segmentNumber, Uri segmentUrl, double segmentDurationSeconds, CancellationToken cancellationToken)
         {
             Channel? channel = channelRegistry.Get(tailNumber);
             if (channel is null)
@@ -60,7 +60,7 @@ namespace DataIngestor.Ingestion
                 foreach (double framePtsTime in framePtsTimes)
                 {
                     long videoUtcMs = AnchorUtcMs + (long)Math.Round((framePtsTime - AnchorPtsTimeSeconds) * 1000);
-                    if (channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentNumber, segmentPath)))
+                    if (channel.FrameChannel.Writer.TryWrite(new FrameRecord(framePtsTime, videoUtcMs, segmentNumber, segmentPath, segmentDurationSeconds)))
                         handedOff = true;
                 }
             }

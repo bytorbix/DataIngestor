@@ -1,3 +1,6 @@
+using DataIngestor.Channels;
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -10,6 +13,13 @@ namespace DataIngestor.Synchronizing
         private const string SEGMENTS_DIRECTORY = "segments";
         private const string TEMP_SUFFIX = ".tmp";
         private const string MANIFEST_FILE = "flight.json";
+        private const string PLAYLIST_FILE = "playlist.m3u8";
+        // never written; a gap entry still needs a URI, and the player skips it without fetching
+        private const string GAP_URI = SEGMENTS_DIRECTORY + "/gap.ts";
+        // ID3 anchoring and ms rounding leave neighbouring segments a few ms apart; anything smaller than this isn't a lost segment
+        private const long MinGapMs = 100;
+
+        public record PlaylistEntry(string Uri, double DurationSeconds, bool IsGap);
 
         private readonly string _outputDirectory;
         private readonly string _tailNumber;
@@ -22,6 +32,9 @@ namespace DataIngestor.Synchronizing
         private int _chunkNumber;
         // the open chunk's staged .ts, owned by this flight from its first frame; it moves into segments/ when the chunk closes
         private string? _segmentPath;
+        // the recorded playlist, built as segments open; a gap is wherever a segment starts after the previous one ended
+        private readonly List<PlaylistEntry> _playlist = new();
+        private long? _previousSegmentEndUtcMs;
         private long _recordedStartUtcMs;
         private long _recordedEndUtcMs;
         private DateTimeOffset _ingestedAtUtc;
@@ -40,15 +53,16 @@ namespace DataIngestor.Synchronizing
 
         // the flight is opened by its first record, since that's the first time its start is known
         // records arrive in order, so the first record of segment N+1 means chunk N is complete
-        public void Write(long videoUtcMs, int segmentNumber, string segmentPath, JsonObject record)
+        public void Write(long videoUtcMs, FrameRecord frame, JsonObject record)
         {
             if (_flightDirectory is null)
                 Open(videoUtcMs);
 
-            if (_chunkWriter is null || segmentNumber != _chunkNumber)
+            if (_chunkWriter is null || frame.SegmentNumber != _chunkNumber)
             {
                 CloseChunk();
-                OpenChunk(segmentNumber, segmentPath);
+                OpenChunk(frame.SegmentNumber, frame.SegmentPath);
+                AddToPlaylist(videoUtcMs, frame);
             }
 
             _recordedEndUtcMs = Math.Max(_recordedEndUtcMs, videoUtcMs);
@@ -67,6 +81,50 @@ namespace DataIngestor.Synchronizing
             _segmentPath = segmentPath;
             _chunkTempPath = Path.Combine(_flightDirectory!, CHUNKS_DIRECTORY, FormatChunkName(segmentNumber) + TEMP_SUFFIX);
             _chunkWriter = new StreamWriter(_chunkTempPath, append: false) { AutoFlush = true };
+        }
+
+        // the segment's first frame marks its start; overlaps (timing noise, a Wowza restart) are listed as they come
+        private void AddToPlaylist(long startUtcMs, FrameRecord frame)
+        {
+            if (_previousSegmentEndUtcMs is long previousEndUtcMs && startUtcMs - previousEndUtcMs >= MinGapMs)
+                _playlist.Add(new PlaylistEntry(GAP_URI, (startUtcMs - previousEndUtcMs) / 1000.0, IsGap: true));
+
+            _playlist.Add(new PlaylistEntry(FormatSegmentKey(frame.SegmentNumber), frame.SegmentDurationSeconds, IsGap: false));
+            _previousSegmentEndUtcMs = startUtcMs + (long)Math.Round(frame.SegmentDurationSeconds * 1000);
+        }
+
+        // VOD playlist: every #EXTINF must fit the target duration, so long gaps are split into equal pieces
+        public static string FormatPlaylist(IReadOnlyList<PlaylistEntry> entries)
+        {
+            double longestSegmentSeconds = entries.Where(entry => !entry.IsGap).Select(entry => entry.DurationSeconds).DefaultIfEmpty(1).Max();
+            int targetDurationSeconds = Math.Max(1, (int)Math.Ceiling(longestSegmentSeconds));
+
+            StringBuilder playlist = new();
+            playlist.Append("#EXTM3U\n");
+            playlist.Append("#EXT-X-VERSION:3\n");
+            playlist.Append(CultureInfo.InvariantCulture, $"#EXT-X-TARGETDURATION:{targetDurationSeconds}\n");
+            playlist.Append("#EXT-X-PLAYLIST-TYPE:VOD\n");
+
+            foreach ((string uri, double durationSeconds, bool isGap) in entries)
+            {
+                int pieces = isGap ? (int)Math.Ceiling(durationSeconds / targetDurationSeconds) : 1;
+                for (int i = 0; i < pieces; i++)
+                {
+                    if (isGap)
+                        playlist.Append("#EXT-X-GAP\n");
+                    playlist.Append(CultureInfo.InvariantCulture, $"#EXTINF:{durationSeconds / pieces:0.000},\n{uri}\n");
+                }
+            }
+
+            playlist.Append("#EXT-X-ENDLIST\n");
+            return playlist.ToString();
+        }
+
+        private void WritePlaylist()
+        {
+            string path = Path.Combine(_flightDirectory!, PLAYLIST_FILE);
+            File.WriteAllText(path + TEMP_SUFFIX, FormatPlaylist(_playlist));
+            File.Move(path + TEMP_SUFFIX, path, overwrite: true);
         }
 
         // the rename is the "done" signal: it's atomic, so a reader sees either the .tmp or the whole chunk
@@ -126,6 +184,8 @@ namespace DataIngestor.Synchronizing
                 return;
 
             CloseChunk();
+            // the closed flight.json comes last: it says everything else is in place
+            WritePlaylist();
             WriteManifest(closed: true);
         }
     }

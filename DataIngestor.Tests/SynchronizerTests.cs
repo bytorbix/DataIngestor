@@ -33,7 +33,7 @@ public class SynchronizerTests : IDisposable
 
     private void WriteTelemetry(long timeMs) => _channel.TelemetryChannel.Writer.TryWrite(new TelemetryRecord(timeMs, $"{{\"time\":{timeMs}}}"));
 
-    private void WriteFrame(long videoUtcMs, int segmentNumber) => _channel.FrameChannel.Writer.TryWrite(new FrameRecord(0, videoUtcMs, segmentNumber, "segment.ts"));
+    private void WriteFrame(long videoUtcMs, int segmentNumber) => _channel.FrameChannel.Writer.TryWrite(new FrameRecord(0, videoUtcMs, segmentNumber, "segment.ts", 2.0));
 
     [Fact]
     public async Task CompletedFrameChannel_DrainsEveryFrame_AndClosesTheFlight()
