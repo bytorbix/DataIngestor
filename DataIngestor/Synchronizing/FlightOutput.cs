@@ -12,7 +12,9 @@ namespace DataIngestor.Synchronizing
         private const string CHUNKS_DIRECTORY = "chunks";
         private const string SEGMENTS_DIRECTORY = "segments";
         private const string TEMP_SUFFIX = ".tmp";
-        private const string MANIFEST_FILE = "flight.json";
+        public const string ManifestFile = "flight.json";
+        // tells the uploader this flight id started a new run, so the old run in the archive goes before any of this one is uploaded
+        public const string ResetMarkerFile = ".reset";
         private const string PLAYLIST_FILE = "playlist.m3u8";
         // never written; a gap entry still needs a URI, and the player skips it without fetching
         private const string GAP_URI = SEGMENTS_DIRECTORY + "/gap.ts";
@@ -158,6 +160,8 @@ namespace DataIngestor.Synchronizing
                 Directory.Delete(_flightDirectory, recursive: true);
             Directory.CreateDirectory(Path.Combine(_flightDirectory, CHUNKS_DIRECTORY));
             Directory.CreateDirectory(Path.Combine(_flightDirectory, SEGMENTS_DIRECTORY));
+            // on every open, not only after a local wipe: the old run may have been uploaded and removed from disk already
+            File.WriteAllText(Path.Combine(_flightDirectory, ResetMarkerFile), string.Empty);
 
             WriteManifest(closed: false);
         }
@@ -174,7 +178,10 @@ namespace DataIngestor.Synchronizing
                 ["status"] = closed ? "closed" : "open"
             };
 
-            File.WriteAllText(Path.Combine(_flightDirectory!, MANIFEST_FILE), manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            // written whole then renamed, so the uploader never reads a half-written status
+            string path = Path.Combine(_flightDirectory!, ManifestFile);
+            File.WriteAllText(path + TEMP_SUFFIX, manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(path + TEMP_SUFFIX, path, overwrite: true);
         }
 
         // unregister ends the flight; a flight that never got a record leaves nothing behind

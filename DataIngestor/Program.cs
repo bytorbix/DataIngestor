@@ -19,6 +19,7 @@ builder.Services.AddSingleton<HlsListener>();
 builder.Services.AddSingleton<TelemetryProcessor>();
 builder.Services.AddSingleton<SynchronizerManager>();
 builder.Services.AddSingleton<IFlightStore, S3FlightStore>();
+builder.Services.AddHostedService<FlightUploadService>();
 
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
