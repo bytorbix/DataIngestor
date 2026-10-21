@@ -20,8 +20,7 @@ namespace DataIngestor.Synchronizing
         private readonly string _tailNumber;
         private readonly ILogger<Synchronizer> _logger;
         private readonly Channel _channel;
-        private readonly string _outputDirectory;
-        private readonly StreamWriter _outputWriter;
+        private readonly FlightOutput _flightOutput;
 
         public Synchronizer(ChannelRegistry channelRegistry, string tailNumber, ILogger<Synchronizer> logger, IConfiguration configuration)
         {
@@ -29,15 +28,14 @@ namespace DataIngestor.Synchronizing
             _logger = logger;
 
             _channel = channelRegistry.Get(tailNumber) ?? throw new InvalidOperationException($"Channel not found for {tailNumber}");
-            _outputDirectory = configuration[OUTPUT_DIRECTORY_FIELD] ?? throw new InvalidOperationException("Output:Directory is not configured");
-
-            Directory.CreateDirectory(_outputDirectory);
-            _outputWriter = new StreamWriter(Path.Combine(_outputDirectory, $"{tailNumber}.jsonl"), append: true) { AutoFlush = true };
+            string outputDirectory = configuration[OUTPUT_DIRECTORY_FIELD] ?? throw new InvalidOperationException("Output:Directory is not configured");
+            _flightOutput = new FlightOutput(outputDirectory, tailNumber);
         }
 
         // telemetry sorted by time, frames in arrival order (emitted strictly in that order)
         private readonly List<BufferedTelemetry> _telemetry = new();
         private readonly Queue<WaitingFrame> _waitingFrames = new();
+        private int _writtenFrames;
 
         private void AddTelemetry(TelemetryRecord record)
         {
@@ -142,7 +140,8 @@ namespace DataIngestor.Synchronizing
                 ["frame"] = new JsonObject
                 {
                     ["ptsTime"] = synced.Frame.PtsTime,
-                    ["segmentUrl"] = synced.Frame.Payload
+                    ["segmentNumber"] = synced.Frame.SegmentNumber,
+                    ["segment"] = FlightOutput.FormatSegmentKey(synced.Frame.SegmentNumber)
                 },
                 ["telemetry"] = synced.Telemetry,
                 ["sync"] = new JsonObject
@@ -153,7 +152,8 @@ namespace DataIngestor.Synchronizing
                 }
             };
 
-            _outputWriter.WriteLine(record.ToJsonString());
+            _flightOutput.Write(synced.VideoUtcMs, synced.Frame, record);
+            _writtenFrames++;
         }
 
         private Task CreateWaitingFrameTimeoutTask(CancellationToken cancellationToken)
@@ -168,36 +168,55 @@ namespace DataIngestor.Synchronizing
             return Task.Delay(TimeSpan.FromMilliseconds(remainingMs), cancellationToken);
         }
 
+        // runs until the frame channel is complete and every waiting frame is written; cancellation is only the hard stop
         public async Task RunAsync(CancellationToken cancellationToken)
         {
             ChannelReader<TelemetryRecord> telemetryReader = _channel.TelemetryChannel.Reader;
             ChannelReader<FrameRecord> frameReader = _channel.FrameChannel.Reader;
+            bool framesComplete = false;
+            string outcome = "faulted";
 
             try
             {
-                while (!cancellationToken.IsCancellationRequested)
+                // video ends first; telemetry keeps flowing so the last frames still get the row after them
+                while (!framesComplete || _waitingFrames.Count > 0)
                 {
                     Task<bool> telemetryReady = telemetryReader.WaitToReadAsync(cancellationToken).AsTask();
-                    Task<bool> frameReady = frameReader.WaitToReadAsync(cancellationToken).AsTask();
+                    Task<bool>? frameReady = framesComplete ? null : frameReader.WaitToReadAsync(cancellationToken).AsTask();
                     Task waitingFrameTimeout = CreateWaitingFrameTimeoutTask(cancellationToken);
 
-                    Task completed = await Task.WhenAny(telemetryReady, frameReady, waitingFrameTimeout);
+                    Task completed = frameReady is null
+                        ? await Task.WhenAny(telemetryReady, waitingFrameTimeout)
+                        : await Task.WhenAny(telemetryReady, frameReady, waitingFrameTimeout);
+                    cancellationToken.ThrowIfCancellationRequested();
 
                     if (completed == telemetryReady && telemetryReader.TryRead(out TelemetryRecord? telemetryRecord))
                     {
                         AddTelemetry(telemetryRecord);
                     }
-                    else if (completed == frameReady && frameReader.TryRead(out FrameRecord? frameRecord))
+                    else if (completed == frameReady)
                     {
-                        _waitingFrames.Enqueue(new WaitingFrame(frameRecord, frameRecord.VideoUtcMs, Environment.TickCount64));
+                        if (frameReader.TryRead(out FrameRecord? frameRecord))
+                            _waitingFrames.Enqueue(new WaitingFrame(frameRecord, frameRecord.VideoUtcMs, Environment.TickCount64));
+                        else if (!frameReady.Result)
+                            framesComplete = true; // complete and empty: stop waiting on it, or it returns false forever
                     }
 
                     EmitReadyFrames();
                 }
+
+                outcome = "drained";
+            }
+            catch (OperationCanceledException)
+            {
+                outcome = "timed out";
             }
             finally
             {
-                _outputWriter.Dispose();
+                int droppedFrames = _waitingFrames.Count + (frameReader.CanCount ? frameReader.Count : 0);
+                _flightOutput.Dispose();
+                _logger.LogInformation("[{TailNumber}] Flight {FlightId} closed ({Outcome}): {WrittenFrames} frames written, {DroppedFrames} dropped",
+                    _tailNumber, _flightOutput.FlightId, outcome, _writtenFrames, droppedFrames);
             }
         }
     }

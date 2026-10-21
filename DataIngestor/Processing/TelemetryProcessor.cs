@@ -6,7 +6,6 @@ namespace DataIngestor.Processing
 {
     public class TelemetryProcessor(ChannelRegistry channelRegistry, TelemetryFilter filter, ILogger<TelemetryProcessor> logger)
     {
-        const string PtsTimePropertyName = "pts_time";
         const string TimePropertyName = "time";
         public void Process(string tailNumber, string telemetryJson)
         {
@@ -26,23 +25,22 @@ namespace DataIngestor.Processing
             channel.TelemetryChannel.Writer.TryWrite(record);
         }
 
-        // null means the telemetry is missing pts_time or time and should be dropped
+        // null means the telemetry is missing time and should be dropped
+        // pts_time is optional (its own correlator group, only sent by sources that have it) and passes through in the payload
         private TelemetryRecord? ParseRecord(string tailNumber, string strippedJson)
         {
             JsonNode? node = JsonNode.Parse(strippedJson);
             JsonObject obj = node!.AsObject();
 
-            if (!obj.TryGetPropertyValue(PtsTimePropertyName, out JsonNode? ptsNode) || ptsNode == null ||
-             !obj.TryGetPropertyValue(TimePropertyName, out JsonNode? timeNode) || timeNode == null)
+            if (!obj.TryGetPropertyValue(TimePropertyName, out JsonNode? timeNode) || timeNode == null)
             {
-                logger.LogWarning("Telemetry for {TailNumber} missing {PtsField}/{TimeField}, dropping.", tailNumber, PtsTimePropertyName, TimePropertyName);
+                logger.LogWarning("Telemetry for {TailNumber} missing {TimeField}, dropping.", tailNumber, TimePropertyName);
                 return null;
             }
 
-            double ptsTime = ptsNode.GetValue<double>();
             long timeMs = timeNode.GetValue<long>();
 
-            return new TelemetryRecord(timeMs, ptsTime, strippedJson);
+            return new TelemetryRecord(timeMs, strippedJson);
         }
     }
 }
