@@ -6,17 +6,19 @@ namespace DataIngestor.Synchronizing
     // Blends the telemetry rows on either side of a frame into one estimated row at the frame's time.
     public static class TelemetryInterpolator
     {
-        private const string TimeFieldName = "time";
+        // ICD (MISB ST 0601) field names
+        private const string TimeFieldName = "PrecisionTimeStamp"; // µs, kept a whole number
 
         private static readonly HashSet<string> DiscreteFields = new()
         {
-            "Tail number", "flight_state", "gps_num", "gps_level", "battery"
+            "Tail number"
         };
 
         // degrees that wrap around (359 -> 1 is a 2 degree turn), blended along the shorter direction
         private static readonly HashSet<string> AngleFields = new()
         {
-            "pitch", "roll", "yaw", "gimbal_pitch", "gimbal_roll", "gimbal_yaw"
+            "PlatformHeadingAngle", "PlatformPitchAngle", "PlatformRollAngle",
+            "SensorRelativeAzimuthAngle", "SensorRelativeElevationAngle", "SensorRelativeRollAngle"
         };
 
         // fraction: 0 = exactly at before, 1 = exactly at after

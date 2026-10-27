@@ -10,6 +10,9 @@ recording's pts_time, so:
 
 is the real sync error (0 = the frame got the telemetry recorded at the same moment).
 
+NOTE: the ICD no longer sends pts_time in the packet, so this needs adapting before it works again:
+the telemetry's position in the recording is (PrecisionTimeStamp - run startAt) / 1e6 seconds.
+
 Usage:
     python sync_accuracy.py <source video.ts> <output/42.jsonl> <output/segments/42> [--csv errors.csv]
 

@@ -31,7 +31,7 @@ public class SynchronizerTests : IDisposable
 
     private string ChunksDirectory() => Path.Combine(_outputDirectory, Tail, FlightOutput.FormatFlightId(Tail, FirstStampMs), "chunks");
 
-    private void WriteTelemetry(long timeMs) => _channel.TelemetryChannel.Writer.TryWrite(new TelemetryRecord(timeMs, $"{{\"time\":{timeMs}}}"));
+    private void WriteTelemetry(long timeMs) => _channel.TelemetryChannel.Writer.TryWrite(new TelemetryRecord(timeMs, $"{{\"PrecisionTimeStamp\":{timeMs * 1000}}}"));
 
     private void WriteFrame(long videoUtcMs, int segmentNumber) => _channel.FrameChannel.Writer.TryWrite(new FrameRecord(0, videoUtcMs, segmentNumber, "segment.ts", 2.0));
 

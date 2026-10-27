@@ -6,7 +6,8 @@ namespace DataIngestor.Processing
 {
     public class TelemetryProcessor(ChannelRegistry channelRegistry, TelemetryFilter filter, ILogger<TelemetryProcessor> logger)
     {
-        const string TimePropertyName = "time";
+        // ICD: MISB ST 0601 PrecisionTimeStamp, microseconds since the Unix epoch (the synchronizer works in ms)
+        const string TimePropertyName = "PrecisionTimeStamp";
         public void Process(string tailNumber, string telemetryJson)
         {
             Channel? channel = channelRegistry.Get(tailNumber);
@@ -26,7 +27,6 @@ namespace DataIngestor.Processing
         }
 
         // null means the telemetry is missing time and should be dropped
-        // pts_time is optional (its own correlator group, only sent by sources that have it) and passes through in the payload
         private TelemetryRecord? ParseRecord(string tailNumber, string strippedJson)
         {
             JsonNode? node = JsonNode.Parse(strippedJson);
@@ -38,7 +38,7 @@ namespace DataIngestor.Processing
                 return null;
             }
 
-            long timeMs = timeNode.GetValue<long>();
+            long timeMs = (long)Math.Round(timeNode.GetValue<long>() / 1000.0);
 
             return new TelemetryRecord(timeMs, strippedJson);
         }
