@@ -1,0 +1,34 @@
+# Builds the DataIngestor image on the marcopolo host whenever master changes.
+#
+# The job runs on that host's Gitea runner (/opt/marcopolo/docker/runner) with the host's Docker, so the
+# image lands where the dataingestor Portainer stack runs it. Portainer polls this repo and redeploys;
+# compose recreates the container only when dataingestor:latest changed.
+#
+# Each build is also tagged with its commit (dataingestor:<sha>), to roll back by retagging:
+#   docker tag dataingestor:<old sha> dataingestor:latest
+
+name: build
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: marcopolo
+    steps:
+      # a plain clone instead of actions/checkout: no action to download from GitHub, and the repo is public
+      - name: Check out
+        run: |
+          git clone --depth 1 --branch "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" src
+          git -C src log -1 --format='%h %s'
+
+      - name: Build image
+        run: |
+          sha=$(git -C src rev-parse --short=7 HEAD)
+          docker build -f src/DataIngestor/Dockerfile -t dataingestor:latest -t "dataingestor:$sha" src
+          docker image ls dataingestor
+
+      - name: Remove dangling layers
+        run: docker image prune -f

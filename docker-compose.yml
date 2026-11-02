@@ -1,11 +1,14 @@
 # DataIngestor as a Portainer stack: pairs Wowza HLS frames with Kafka telemetry per tail and archives
 # each flight to MinIO.
 #
-# Portainer (Stacks > Add stack > Repository) builds this from the repo and redeploys it on push:
+# The image is built on the host by the Gitea runner (.gitea/workflows/build.yml): Portainer can't build
+# through its agent. Portainer (Stacks > Add stack > Repository) runs it:
 #   name                  dataingestor   (keeps the volume name dataingestor_output, where flights wait)
 #   repository reference  refs/heads/master
 #   compose path          docker-compose.yml
 #   environment           STORAGE_ACCESS_KEY, STORAGE_SECRET_KEY (MinIO), optionally HOST_IP
+#   GitOps updates        polling, with "force redeployment" on, so a newly built image gets picked up
+#                         even when the compose file didn't change
 #
 # Kafka, Wowza and MinIO are reached on the host IP, as when the service runs outside Docker. Set here
 # rather than in appsettings.json, so the repo holds no machine-specific addresses.
@@ -14,12 +17,9 @@ name: dataingestor
 
 services:
   dataingestor:
-    build:
-      context: .
-      dockerfile: DataIngestor/Dockerfile
+    # built on the host by the Gitea runner; never pulled from a registry
     image: dataingestor:latest
-    # rebuild from the repo on every redeploy, instead of reusing the image already on the host
-    pull_policy: build
+    pull_policy: never
     container_name: dataingestor
     restart: unless-stopped
     ports:
