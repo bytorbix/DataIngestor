@@ -18,10 +18,12 @@ jobs:
   build:
     runs-on: marcopolo
     steps:
-      # a plain clone instead of actions/checkout: no action to download from GitHub, and the repo is public
+      # a plain clone instead of actions/checkout: no action to download from GitHub, and the repo is public.
+      # GIT_BASE_URL comes from the runner's config: Gitea's own address (GITHUB_SERVER_URL) isn't reachable
+      # from every network its runners are on
       - name: Check out
         run: |
-          git clone --depth 1 --branch "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" src
+          git clone --depth 1 --branch "$GITHUB_REF_NAME" "${GIT_BASE_URL:-$GITHUB_SERVER_URL}/$GITHUB_REPOSITORY.git" src
           git -C src log -1 --format='%h %s'
 
       - name: Build image
